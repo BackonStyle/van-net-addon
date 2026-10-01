@@ -1,0 +1,305 @@
+# ============================================================================
+# Van-Netzwerk -- Home Assistant Package
+#
+# Ablage:  config/packages/van_net.yaml
+# Aktivieren in configuration.yaml:
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Voraussetzungen:
+#   - MQTT-Integration aktiv, App "Van Netzwerk Agent" laeuft
+#   - Mobile-App-Integration fuer die Benachrichtigungen
+#   - Ordner config/www/van-net/ angelegt (dort landet der QR-Code)
+#
+# Die Signalwerte (RSRP/SINR) liefert die App selbst per MQTT. Die offizielle
+# Teltonika-Integration wird NICHT benoetigt -- sie scheitert auf RutOS 7.24
+# an einem fehlenden Feld (release.target) in der API-Antwort.
+#
+# -------------------------------------------------------------------------
+# AUF EINEM NEUEN GERAET ANZUPASSEN -- genau eine Stelle:
+#
+#   notify.mobile_app_daniphone15pro   (3x, jeweils hinter "- action:")
+#
+# Der richtige Name steht unter:
+#   Entwicklerwerkzeuge -> Aktionen -> Suchfeld "notify.mobile"
+#
+# Alles andere laeuft ohne Aenderung. Die Entity-IDs der Signalsensoren
+# werden ueber die Helfer "SINR Entity" und "RSRP Entity" gesetzt und sind
+# in der Oberflaeche aenderbar, ohne diese Datei anzufassen.
+# -------------------------------------------------------------------------
+# ============================================================================
+
+input_text:
+  van_teltonika_sinr_entity:
+    name: SINR Entity
+    initial: sensor.van_netzwerk_mobilfunk_sinr
+    max: 255
+  van_teltonika_rsrp_entity:
+    name: RSRP Entity
+    initial: sensor.van_netzwerk_mobilfunk_rsrp
+    max: 255
+
+input_number:
+  van_assumed_bandwidth:
+    name: Angenommene Kanalbandbreite
+    min: 5
+    max: 200
+    step: 5
+    initial: 60
+    unit_of_measurement: MHz
+    icon: mdi:arrow-expand-horizontal
+
+  van_cell_load_factor:
+    name: Realismusfaktor Zelle
+    # Eine Funkzelle teilst du dir mit anderen. 1.0 waere Laborbedingung.
+    min: 0.1
+    max: 1.0
+    step: 0.05
+    initial: 0.45
+    icon: mdi:account-group
+
+  van_switch_threshold:
+    name: Schwelle fuer Wechselvorschlag
+    # Erst vorschlagen, wenn Mobilfunk um diesen Faktor schneller waere
+    min: 1.1
+    max: 5.0
+    step: 0.1
+    initial: 1.5
+    icon: mdi:ray-start-arrow
+
+input_boolean:
+  van_suggest_5g_switch:
+    name: 5G-Wechsel vorschlagen
+    icon: mdi:signal-5g
+    initial: true
+
+# ----------------------------------------------------------------------------
+# Geschaetzter Mobilfunk-Durchsatz
+#
+# WARUM SCHAETZUNG STATT MESSUNG:
+# Die echte SIM-Geschwindigkeit laesst sich nur messen, indem man die SIM
+# benutzt -- das kostet Datenvolumen und wuerde ein Umschalten voraussetzen,
+# also genau das, was nicht automatisch passieren soll.
+#
+# RECHENWEG (Shannon mit praxisnahen Deckeln):
+#   1. Spektrale Effizienz aus SINR: log2(1 + SNR), gedeckelt bei 7.4 bit/s/Hz
+#      (entspricht 256QAM, mehr gibt die Modulation real nicht her)
+#   2. mal Bandbreite, mal 2 fuer MIMO 2x2
+#   3. mal 0.75 fuer Protokoll-Overhead
+#   4. mal Realismusfaktor fuer die geteilte Zelle
+#   5. Daempfung bei schwachem RSRP -- hohe SINR bei miesem Pegel ist
+#      truegerisch (du haengst dann an einer leeren, aber fernen Zelle)
+#
+# GENAUIGKEIT: grob, etwa plus/minus 30 Prozent. Reicht fuer die Frage
+# "lohnt sich der Wechsel ueberhaupt", nicht fuer exakte Zahlen.
+# Nach ein paar Wochen kannst du den Realismusfaktor nachjustieren.
+# ----------------------------------------------------------------------------
+
+template:
+  - sensor:
+      - name: "Mobilfunk geschaetzter Durchsatz"
+        unique_id: van_mobile_estimated_mbps
+        unit_of_measurement: "Mbit/s"
+        state_class: measurement
+        icon: mdi:signal-cellular-3
+        state: >
+          {% set sinr_e = states('input_text.van_teltonika_sinr_entity') %}
+          {% set rsrp_e = states('input_text.van_teltonika_rsrp_entity') %}
+          {% set sinr = states(sinr_e) | float(-99) %}
+          {% set rsrp = states(rsrp_e) | float(-140) %}
+          {% if sinr < -20 or sinr > 50 %}
+            unknown
+          {% else %}
+            {% set bw = states('input_number.van_assumed_bandwidth') | float(60) %}
+            {% set load = states('input_number.van_cell_load_factor') | float(0.45) %}
+            {% set snr = 10 ** (sinr / 10) %}
+            {% set se = [ (log(1 + snr) / log(2)), 7.4 ] | min %}
+            {% set mimo = 2 %}
+            {% set raw = se * bw * mimo * 0.75 * load %}
+            {% set damp = 1.0 if rsrp >= -100
+                     else (0.7 if rsrp >= -110
+                     else (0.4 if rsrp >= -118 else 0.15)) %}
+            {{ [ (raw * damp) | round(1), 0 ] | max }}
+          {% endif %}
+        attributes:
+          genauigkeit: "Schaetzung, ca. +/-30%"
+          grundlage: >
+            SINR {{ states(states('input_text.van_teltonika_sinr_entity')) }} dB,
+            RSRP {{ states(states('input_text.van_teltonika_rsrp_entity')) }} dBm
+
+      - name: "Uplink Empfehlung"
+        unique_id: van_uplink_recommendation
+        icon: mdi:thumb-up-outline
+        state: >
+          {% set wifi = states('sensor.van_netzwerk_wlan_geschwindigkeit') | float(0) %}
+          {% set mob = states('sensor.mobilfunk_geschaetzter_durchsatz') | float(0) %}
+          {% set thr = states('input_number.van_switch_threshold') | float(1.5) %}
+          {% if states('sensor.van_netzwerk_aktiver_uplink') == 'mobile' %}
+            Mobilfunk aktiv
+          {% elif wifi <= 0 or mob <= 0 %}
+            Keine Daten
+          {% elif mob > wifi * thr %}
+            Mobilfunk waere schneller
+          {% else %}
+            WLAN behalten
+          {% endif %}
+
+# ----------------------------------------------------------------------------
+# Automationen
+# ----------------------------------------------------------------------------
+
+automation:
+  # --- Captive Portal: Automatik gescheitert, QR-Code anbieten ---------------
+  - id: van_portal_manual_qr
+    alias: "Van: Portal manuell bestaetigen (QR)"
+    mode: single
+    triggers:
+      - trigger: mqtt
+        topic: van_net/event/portal_manual
+    actions:
+      - variables:
+          ssid: "{{ trigger.payload_json.ssid }}"
+          url: "{{ trigger.payload_json.url }}"
+          qr: "{{ trigger.payload_json.qr }}"
+      - action: notify.mobile_app_daniphone15pro
+        data:
+          title: "WLAN-Portal braucht dich"
+          message: >
+            "{{ ssid }}" liess sich nicht automatisch bestaetigen.
+            QR-Code scannen oder antippen.
+          data:
+            image: "{{ qr }}"
+            # Sichtbar lassen, bis quittiert
+            persistent: true
+            sticky: true
+            actions:
+              - action: URI
+                title: "Portal oeffnen"
+                uri: "{{ url }}"
+              - action: "VAN_PORTAL_RETRY"
+                title: "Nochmal versuchen"
+      - action: persistent_notification.create
+        data:
+          notification_id: van_portal
+          title: "Captive Portal offen"
+          message: >
+            Netz "{{ ssid }}" wartet auf Bestaetigung.
+
+            WICHTIG: Dein Handy muss dabei im Router-WLAN bleiben.
+            Oeffnest du das Portal ueber Mobilfunk, wird nur das Handy
+            freigeschaltet, nicht der Router.
+
+            ![QR]({{ qr }})
+
+  - id: van_portal_retry_action
+    alias: "Van: Portal-Login wiederholen (aus Notification)"
+    mode: single
+    triggers:
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: "VAN_PORTAL_RETRY"
+    actions:
+      - action: button.press
+        target:
+          entity_id: button.van_netzwerk_portal_login_wiederholen
+
+  - id: van_portal_cleared
+    alias: "Van: Portal erledigt"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: sensor.van_netzwerk_portal_status
+        to: "ok"
+    actions:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: van_portal
+
+  # --- 5G-Wechsel vorschlagen, aber NICHT selbst schalten -------------------
+  - id: van_suggest_mobile_switch
+    alias: "Van: Mobilfunk-Wechsel vorschlagen"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: sensor.van_netzwerk_wlan_geschwindigkeit
+        for: "00:01:00"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.van_suggest_5g_switch
+        state: "on"
+      - condition: state
+        entity_id: sensor.van_netzwerk_aktiver_uplink
+        state: "wifi"
+      - condition: template
+        value_template: >
+          {% set wifi = states('sensor.van_netzwerk_wlan_geschwindigkeit') | float(0) %}
+          {% set mob = states('sensor.mobilfunk_geschaetzter_durchsatz') | float(0) %}
+          {% set thr = states('input_number.van_switch_threshold') | float(1.5) %}
+          {{ wifi > 0 and mob > 0 and mob > wifi * thr }}
+    actions:
+      - action: notify.mobile_app_daniphone15pro
+        data:
+          title: "Mobilfunk waere schneller"
+          message: >
+            WLAN liefert {{ states('sensor.van_netzwerk_wlan_geschwindigkeit') }} Mbit/s,
+            Mobilfunk geschaetzt {{ states('sensor.mobilfunk_geschaetzter_durchsatz') }} Mbit/s.
+            Umschalten?
+          data:
+            actions:
+              - action: "VAN_SWITCH_MOBILE"
+                title: "Auf SIM wechseln"
+              - action: "VAN_KEEP_WIFI"
+                title: "WLAN behalten"
+
+  - id: van_do_switch_mobile
+    alias: "Van: Auf SIM wechseln (bestaetigt)"
+    mode: single
+    triggers:
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: "VAN_SWITCH_MOBILE"
+    actions:
+      - action: select.select_option
+        target:
+          entity_id: select.van_netzwerk_wan_modus
+        data:
+          option: "SIM erzwingen"
+
+  # --- Erinnerung: manueller Zwangsmodus laeuft noch -------------------------
+  # Verhindert, dass du wochenlang unbemerkt auf der SIM haengst und
+  # Datenvolumen verbrennst.
+  - id: van_forced_mode_reminder
+    alias: "Van: Erinnerung an erzwungenen WAN-Modus"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: select.van_netzwerk_wan_modus
+        to: "SIM erzwingen"
+        for: "04:00:00"
+    actions:
+      - action: notify.mobile_app_daniphone15pro
+        data:
+          title: "Noch auf SIM erzwungen"
+          message: >
+            Seit 4 Stunden auf SIM festgenagelt. Zurueck auf Auto?
+          data:
+            actions:
+              - action: "VAN_BACK_TO_AUTO"
+                title: "Auf Auto zurueck"
+
+  - id: van_back_to_auto
+    alias: "Van: Zurueck auf Auto"
+    mode: single
+    triggers:
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: "VAN_BACK_TO_AUTO"
+    actions:
+      - action: select.select_option
+        target:
+          entity_id: select.van_netzwerk_wan_modus
+        data:
+          option: "Auto"
