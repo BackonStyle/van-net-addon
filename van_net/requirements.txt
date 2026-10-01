@@ -1,0 +1,7 @@
+paho-mqtt==1.6.1
+paramiko==3.4.0
+PyYAML==6.0.1
+requests==2.31.0
+playwright==1.44.0
+qrcode==7.4.2
+Pillow==10.3.0
