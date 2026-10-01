@@ -1,0 +1,80 @@
+# Home-Assistant-Add-on-Manifest
+# Diese Datei macht aus dem Ordner ein installierbares Add-on.
+name: Van Netzwerk Agent
+version: "1.1.0"
+slug: van_net
+description: >-
+  Automatische WLAN-Suche im Stand, Captive-Portal-Login und Uplink-Umschalter
+  fuer Teltonika RUTC50 eSIM.
+# stage: stable -- 'experimental' wuerde das Add-on in der Oberflaeche
+# verstecken, solange der erweiterte Modus nicht aktiv ist.
+stage: stable
+
+arch:
+  - aarch64
+  - amd64
+
+# services: startet automatisch mit, laeuft dauerhaft
+startup: services
+boot: auto
+init: false
+
+# host_network: Die Portal-Erkennung muss denselben Weg ins Netz nehmen wie
+# dein uebriges LAN. In einem isolierten Container-Netz wuerde sie falsche
+# Ergebnisse liefern.
+host_network: true
+
+# Holt sich MQTT-Zugangsdaten automatisch vom Mosquitto-Add-on
+services:
+  - mqtt:need
+
+map:
+  # Schreibt den QR-Code direkt nach /config/www/van-net/
+  - homeassistant_config:rw
+  # Screenshots und optionaler SSH-Key unter /share/van-net/
+  - share:rw
+
+options:
+  router_host: "192.168.1.1"
+  router_username: "root"
+  router_password: ""
+  router_ssh_key: ""
+  wifi_client_device: "wlan0"
+  wifi_wan_interface: "wan1"
+  mobile_wan_interface: "mob1s3a1e1"
+  auto_connect: true
+  auto_connect_open: true
+  min_signal_dbm: -78
+  scan_cooldown_seconds: 300
+  stationary_below_kmh: 3.0
+  stationary_after_seconds: 180
+  poll_interval_seconds: 20
+  portal_browser_enabled: true
+  portal_max_rounds: 3
+  known_networks: []
+  blocked_ssids: []
+  log_level: "info"
+
+schema:
+  router_host: str
+  router_username: str
+  router_password: password?
+  router_ssh_key: str?
+  wifi_client_device: str
+  wifi_wan_interface: str
+  mobile_wan_interface: str
+  auto_connect: bool
+  auto_connect_open: bool
+  min_signal_dbm: int
+  scan_cooldown_seconds: int
+  stationary_below_kmh: float
+  stationary_after_seconds: int
+  poll_interval_seconds: int
+  portal_browser_enabled: bool
+  portal_max_rounds: int
+  known_networks:
+    - ssid: str
+      password: password?
+  blocked_ssids:
+    - str
+  log_level: list(trace|debug|info|warning|error)?
