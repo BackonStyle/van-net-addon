@@ -1,7 +1,7 @@
 # Home-Assistant-Add-on-Manifest
 # Diese Datei macht aus dem Ordner ein installierbares Add-on.
 name: Van Netzwerk Agent
-version: "1.0.0"
+version: "1.1.0"
 slug: van_net
 description: >-
   Automatische WLAN-Suche im Stand, Captive-Portal-Login und Uplink-Umschalter

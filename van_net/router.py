@@ -350,6 +350,34 @@ class Router:
         self.run("wifi reload", timeout=40)
         log.info("WLAN-Client deaktiviert")
 
+    # ---------------------------------------------------------------- Mobilfunk
+
+    def signal(self) -> dict:
+        """
+        Signalwerte des Modems.
+
+        Ersetzt die offizielle Teltonika-Integration, die auf RutOS 7.24
+        an einem fehlenden Feld (release.target) scheitert. Der Weg ueber
+        ubus ist ohnehin direkter und braucht keinen API-Token.
+
+        Liefert {'rssi','rsrp','rsrq','sinr','net_mode'} oder {}.
+        """
+        try:
+            data = self.run_json("ubus call gsm.modem0 get_signal_query '{}'",
+                                 timeout=10)
+        except RouterError:
+            return {}
+
+        out = {}
+        for key in ("rssi", "rsrp", "rsrq", "sinr"):
+            value = data.get(key)
+            if isinstance(value, (int, float)):
+                out[key] = value
+        mode = data.get("net_mode")
+        if mode:
+            out["net_mode"] = str(mode)
+        return out
+
     # ---------------------------------------------------------------- WAN / Failover
 
     def mwan_status(self) -> dict:

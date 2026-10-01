@@ -102,6 +102,11 @@ class Agent:
             "portal_url": "",
             "speed_kmh": None,
             "stationary": False,
+            "rssi": None,
+            "rsrp": None,
+            "rsrq": None,
+            "sinr": None,
+            "net_mode": "",
             "last_scan": "",
             "last_error": "",
         }
@@ -179,6 +184,11 @@ class Agent:
             ("wifi_signal", "WLAN-Signal", "mdi:wifi-strength-3", "dBm", "signal_strength"),
             ("wifi_speed_mbps", "WLAN-Geschwindigkeit", "mdi:speedometer", "Mbit/s", None),
             ("speed_kmh", "Fahrzeuggeschwindigkeit", "mdi:car-speed-limiter", "km/h", None),
+            ("rsrp", "Mobilfunk RSRP", "mdi:signal-cellular-outline", "dBm", "signal_strength"),
+            ("rsrq", "Mobilfunk RSRQ", "mdi:signal-cellular-outline", "dB", None),
+            ("sinr", "Mobilfunk SINR", "mdi:signal-variant", "dB", None),
+            ("rssi", "Mobilfunk RSSI", "mdi:antenna", "dBm", "signal_strength"),
+            ("net_mode", "Mobilfunk Netzmodus", "mdi:network-outline", None, None),
             ("portal_state", "Portal-Status", "mdi:shield-account", None, None),
             ("portal_url", "Portal-Adresse", "mdi:link-variant", None, None),
             ("last_scan", "Letzter Scan", "mdi:radar", None, None),
@@ -252,6 +262,14 @@ class Agent:
             link = self.router.wifi_link(self.client_device)
             self.state["uplink_ssid"] = link.get("ssid") or ""
             self.state["wifi_signal"] = link.get("signal")
+
+            # Mobilfunk-Signalwerte -- Grundlage der Durchsatzschaetzung in HA
+            sig = self.router.signal()
+            for key in ("rssi", "rsrp", "rsrq", "sinr"):
+                if key in sig:
+                    self.state[key] = sig[key]
+            if "net_mode" in sig:
+                self.state["net_mode"] = sig["net_mode"]
 
             self.state["active_wan"] = self.router.active_wan(
                 self.wifi_iface, self.mobile_iface)
