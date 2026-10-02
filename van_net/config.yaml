@@ -1,7 +1,7 @@
 # Home-Assistant-Add-on-Manifest
 # Diese Datei macht aus dem Ordner ein installierbares Add-on.
 name: Van Netzwerk Agent
-version: "1.1.0"
+version: "1.5.0"
 slug: van_net
 description: >-
   Automatische WLAN-Suche im Stand, Captive-Portal-Login und Uplink-Umschalter
@@ -51,6 +51,7 @@ options:
   poll_interval_seconds: 20
   portal_browser_enabled: true
   portal_max_rounds: 3
+  gps_publish_interval_seconds: 1800
   known_networks: []
   blocked_ssids: []
   log_level: "info"
@@ -72,6 +73,7 @@ schema:
   poll_interval_seconds: int
   portal_browser_enabled: bool
   portal_max_rounds: int
+  gps_publish_interval_seconds: int
   known_networks:
     - ssid: str
       password: password?

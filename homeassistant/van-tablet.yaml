@@ -1,0 +1,218 @@
+# =============================================================================
+# Dashboard "Tablet" -- fuer das Fire HD 10 im Fahrzeug
+#
+# Ablage:  /config/dashboards/van-tablet.yaml
+#
+# Eintragen in configuration.yaml unter lovelace.dashboards:
+#
+#   van-tablet:
+#     mode: yaml
+#     filename: dashboards/van-tablet.yaml
+#     title: Tablet
+#     icon: mdi:tablet-dashboard
+#     show_in_sidebar: false      # nur per URL erreichbar
+#
+# Aufruf auf dem Tablet:  http://<ha-adresse>:8123/van-tablet/start
+#
+# Gegenueber der Seite "Internet" bewusst reduziert: grosse Flaechen fuer
+# Finger, nur was man im Fahrzeug wirklich antippt. Feinjustierung und
+# Diagnose bleiben auf dem Telefon.
+# =============================================================================
+
+title: Van
+views:
+  - title: Start
+    path: start
+    icon: mdi:home
+    type: sections
+    max_columns: 3
+    dense_section_placement: true
+    sections:
+
+      # ------------------------------------------------ Status, gross
+      - type: grid
+        column_span: 3
+        cards:
+          - type: heading
+            heading: Internet
+            heading_style: title
+            icon: mdi:web
+
+          - type: tile
+            entity: sensor.van_netzwerk_aktiver_uplink
+            name: Verbindung
+            icon: mdi:transit-connection-variant
+            vertical: true
+            hide_state: false
+
+          - type: tile
+            entity: sensor.van_netzwerk_verbundenes_wlan
+            name: Netz
+            icon: mdi:wifi
+            vertical: true
+
+          - type: tile
+            entity: sensor.van_netzwerk_wlan_geschwindigkeit
+            name: Tempo
+            icon: mdi:speedometer
+            vertical: true
+
+      # ------------------------------------------------ Umschalter
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Umschalten
+            heading_style: subtitle
+            icon: mdi:swap-horizontal
+
+          - type: tile
+            entity: select.van_netzwerk_wan_modus
+            name: Uplink
+            icon: mdi:swap-horizontal
+            features_position: bottom
+            features:
+              - type: select-options
+
+          - type: tile
+            entity: select.van_netzwerk_sim_karte
+            name: SIM
+            icon: mdi:sim
+            features_position: bottom
+            features:
+              - type: select-options
+
+      # ------------------------------------------------ WLAN verbinden
+      - type: grid
+        cards:
+          - type: heading
+            heading: WLAN verbinden
+            heading_style: subtitle
+            icon: mdi:wifi-plus
+
+          - type: tile
+            entity: button.van_netzwerk_jetzt_wlan_suchen
+            name: Netze suchen
+            icon: mdi:radar
+
+          - type: entities
+            show_header_toggle: false
+            entities:
+              - entity: select.van_netzwerk_gefundenes_wlan
+                name: Netz
+              - entity: text.van_netzwerk_wlan_passwort
+                name: Passwort
+
+          - type: tile
+            entity: button.van_netzwerk_mit_ausgewaehltem_wlan_verbinden
+            name: Verbinden
+            icon: mdi:wifi-plus
+            color: green
+
+          - type: tile
+            entity: sensor.van_netzwerk_verbindungsstatus
+            name: Status
+            icon: mdi:progress-wrench
+            vertical: true
+
+      # ------------------------------------------------ QR nur bei Bedarf
+      - type: grid
+        column_span: 3
+        cards:
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.van_netzwerk_portal_status
+                state: manual
+            card:
+              type: horizontal-stack
+              cards:
+                - type: picture-entity
+                  entity: sensor.van_netzwerk_portal_status
+                  image: /local/van-net/portal_qr.png
+                  name: Anmeldeseite — mit dem Handy scannen
+                  show_state: false
+                  tap_action:
+                    action: none
+                - type: markdown
+                  content: >-
+                    ### Anmeldung offen
+
+
+                    Code mit dem Handy scannen.
+                    **Das Handy muss im Fahrzeug-WLAN bleiben** — über
+                    Mobilfunk geöffnet wird nur das Handy freigeschaltet.
+
+      # ------------------------------------------------ Mobilfunk kompakt
+      - type: grid
+        cards:
+          - type: heading
+            heading: Mobilfunk
+            heading_style: subtitle
+            icon: mdi:signal-cellular-3
+
+          - type: gauge
+            entity: sensor.mobilfunk_geschaetzter_durchsatz
+            name: Geschaetzt
+            unit: Mbit/s
+            min: 0
+            max: 300
+            needle: true
+            severity:
+              red: 0
+              yellow: 20
+              green: 60
+
+          - type: glance
+            columns: 2
+            entities:
+              - entity: sensor.van_netzwerk_mobilfunk_netzmodus
+                name: Netz
+              - entity: sensor.van_netzwerk_mobilfunk_sinr
+                name: SINR
+
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.van_netzwerk_modem_drosselt
+                state: "on"
+            card:
+              type: tile
+              entity: sensor.van_netzwerk_modemtemperatur
+              name: Modem drosselt wegen Hitze
+              icon: mdi:thermometer-alert
+              color: red
+
+      # ------------------------------------------------ Tablet selbst
+      - type: grid
+        cards:
+          - type: heading
+            heading: Tablet
+            heading_style: subtitle
+            icon: mdi:tablet
+
+          # Erscheint nur, wenn die Ladung aus dem Schonbereich laeuft
+          - type: conditional
+            conditions:
+              - condition: or
+                conditions:
+                  - condition: numeric_state
+                    entity: sensor.van_tablet_battery
+                    below: 25
+                  - condition: numeric_state
+                    entity: sensor.van_tablet_battery
+                    above: 85
+            card:
+              type: tile
+              entity: sensor.van_tablet_battery
+              name: Akku ausserhalb des Schonbereichs
+              icon: mdi:battery-alert
+              color: orange
+
+          - type: tile
+            entity: light.van_tablet_screen
+            name: Bildschirm
+            icon: mdi:monitor
+            features_position: bottom
+            features:
+              - type: light-brightness

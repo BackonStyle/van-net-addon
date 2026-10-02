@@ -1,0 +1,347 @@
+# =============================================================================
+# Eigenstaendiges Dashboard "Internet"
+#
+# Ablage:  /config/dashboards/van-internet.yaml
+#
+# Eintragen in configuration.yaml:
+#
+#   lovelace:
+#     mode: storage
+#     dashboards:
+#       van-internet:
+#         mode: yaml
+#         filename: dashboards/van-internet.yaml
+#         title: Internet
+#         icon: mdi:web
+#         show_in_sidebar: true
+#
+# Das Installationsskript macht beides selbst.
+#
+# Dieses Dashboard erscheint als eigener Eintrag in der Seitenleiste und
+# laesst dein vorhandenes Dashboard unberuehrt. Es ist dafuer NICHT ueber die
+# Oberflaeche bearbeitbar -- Aenderungen gehen ueber diese Datei, danach
+# Browser neu laden.
+#
+# Lieber als Seite im bestehenden Dashboard? Dann den Block unter 'views:'
+# kopieren und dort ueber den Rohkonfigurations-Editor einhaengen.
+#
+# Verwendet ausschliesslich eingebaute Karten -- kein HACS.
+# =============================================================================
+
+title: Van
+views:
+- title: Internet
+  path: internet
+  icon: mdi:web
+  type: sections
+  max_columns: 3
+  sections:
+  - type: grid
+    cards:
+    - type: heading
+      heading: Verbindung
+      heading_style: title
+      icon: mdi:transit-connection-variant
+      badges:
+      - type: entity
+        entity: binary_sensor.van_netzwerk_internet_verfuegbar
+        show_state: true
+    - type: tile
+      entity: select.van_netzwerk_wan_modus
+      name: Uplink-Modus
+      icon: mdi:swap-horizontal
+      features_position: bottom
+      features:
+      - type: select-options
+    - type: tile
+      entity: sensor.van_netzwerk_aktiver_uplink
+      name: Aktiv
+      icon: mdi:check-network
+      color: green
+      vertical: true
+    - type: tile
+      entity: sensor.uplink_empfehlung
+      name: Empfehlung
+      icon: mdi:thumb-up-outline
+      vertical: true
+  - type: grid
+    cards:
+    - type: heading
+      heading: WLAN
+      heading_style: title
+      icon: mdi:wifi
+      badges:
+      - type: entity
+        entity: sensor.van_netzwerk_verbundenes_wlan
+        show_state: true
+    - type: gauge
+      entity: sensor.van_netzwerk_wlan_signal
+      name: Signal
+      min: -90
+      max: -30
+      needle: true
+      severity:
+        red: -90
+        yellow: -78
+        green: -65
+    - type: gauge
+      entity: sensor.van_netzwerk_wlan_geschwindigkeit
+      name: Gemessen
+      unit: Mbit/s
+      min: 0
+      max: 200
+      needle: true
+      severity:
+        red: 0
+        yellow: 10
+        green: 40
+  - type: grid
+    cards:
+    - type: heading
+      heading: Netz verbinden
+      heading_style: subtitle
+      icon: mdi:wifi-plus
+    - type: entities
+      show_header_toggle: false
+      entities:
+      - entity: button.van_netzwerk_jetzt_wlan_suchen
+        name: 1 · Umgebung durchsuchen
+        icon: mdi:radar
+      - entity: select.van_netzwerk_gefundenes_wlan
+        name: 2 · Netz waehlen
+      - entity: text.van_netzwerk_wlan_passwort
+        name: 3 · Passwort
+      - entity: button.van_netzwerk_mit_ausgewaehltem_wlan_verbinden
+        name: 4 · Verbinden
+        icon: mdi:wifi-plus
+      - type: divider
+      - entity: sensor.van_netzwerk_verbindungsstatus
+        name: Status
+        icon: mdi:progress-wrench
+      - type: section
+        label: '*  Passwort bereits bekannt      #  verschluesselt'
+    - type: conditional
+      conditions:
+      - condition: numeric_state
+        entity: sensor.van_netzwerk_basisstationen_im_netz
+        above: 1
+      card:
+        type: entities
+        show_header_toggle: false
+        entities:
+        - entity: button.van_netzwerk_beste_basisstation_suchen
+          name: Beste Basisstation messen
+          icon: mdi:access-point-network
+        - entity: sensor.van_netzwerk_basisstationen_im_netz
+          name: Gefunden
+        - entity: sensor.van_netzwerk_gebundene_basisstation
+          name: Gebunden an
+        - type: section
+          label: Misst hinter jeder Basisstation Latenz, Verlust und Durchsatz. Dauert rund eine Minute
+            pro Station.
+  - type: grid
+    cards:
+    - type: conditional
+      conditions:
+      - condition: state
+        entity: sensor.van_netzwerk_portal_status
+        state_not: idle
+      card:
+        type: heading
+        heading: Anmeldeseite
+        heading_style: subtitle
+        icon: mdi:shield-account
+    - type: conditional
+      conditions:
+      - condition: state
+        entity: sensor.van_netzwerk_portal_status
+        state: manual
+      card:
+        type: picture-entity
+        entity: sensor.van_netzwerk_portal_status
+        image: /local/van-net/portal_qr.png
+        name: Mit dem Handy scannen
+        show_state: false
+        show_name: true
+        tap_action:
+          action: none
+    - type: conditional
+      conditions:
+      - condition: state
+        entity: sensor.van_netzwerk_portal_status
+        state: manual
+      card:
+        type: markdown
+        content: '**Handy im Fahrzeug-WLAN lassen.** Scannst du den Code ueber Mobilfunk, wird nur das Handy
+          freigeschaltet, nicht der Router.'
+        text_only: true
+    - type: conditional
+      conditions:
+      - condition: state
+        entity: sensor.van_netzwerk_portal_status
+        state_not: idle
+      card:
+        type: tile
+        entity: button.van_netzwerk_portal_login_wiederholen
+        name: Automatik nochmal versuchen
+        icon: mdi:login-variant
+  - type: grid
+    cards:
+    - type: heading
+      heading: Mobilfunk
+      heading_style: title
+      icon: mdi:signal-cellular-3
+      badges:
+      - type: entity
+        entity: sensor.van_netzwerk_mobilfunk_netzmodus
+        show_state: true
+    - type: conditional
+      conditions:
+      - condition: state
+        entity: binary_sensor.van_netzwerk_modem_drosselt
+        state: 'on'
+      card:
+        type: tile
+        entity: sensor.van_netzwerk_modemtemperatur
+        name: Modem drosselt wegen Hitze
+        icon: mdi:thermometer-alert
+        color: red
+        hide_state: false
+        vertical: false
+    - type: conditional
+      conditions:
+      - condition: state
+        entity: binary_sensor.van_netzwerk_modem_drosselt
+        state: 'on'
+      card:
+        type: markdown
+        text_only: true
+        content: Zone **{{ states('sensor.van_netzwerk_thermikzone') }}** — der Router senkt Sendeleistung
+          und Datenrate selbst. Der Mobilfunk ist dann langsamer als die Signalwerte vermuten lassen.
+    - type: tile
+      entity: select.van_netzwerk_sim_karte
+      name: SIM-Karte
+      icon: mdi:sim
+      features_position: bottom
+      features:
+      - type: select-options
+    - type: gauge
+      entity: sensor.mobilfunk_geschaetzter_durchsatz
+      name: Geschaetzt
+      unit: Mbit/s
+      min: 0
+      max: 300
+      needle: true
+      severity:
+        red: 0
+        yellow: 20
+        green: 60
+    - type: gauge
+      entity: sensor.van_netzwerk_mobilfunk_sinr
+      name: Qualitaet (SINR)
+      min: -10
+      max: 30
+      needle: true
+      severity:
+        red: -10
+        yellow: 0
+        green: 10
+    - type: glance
+      show_name: true
+      show_state: true
+      columns: 3
+      entities:
+      - entity: sensor.van_netzwerk_mobilfunk_rsrp
+        name: RSRP
+      - entity: sensor.van_netzwerk_mobilfunk_rsrq
+        name: RSRQ
+      - entity: sensor.van_netzwerk_mobilfunk_rssi
+        name: RSSI
+  - type: grid
+    cards:
+    - type: heading
+      heading: Fahrzeug
+      heading_style: title
+      icon: mdi:van-passenger
+      badges:
+      - type: entity
+        entity: binary_sensor.van_netzwerk_fahrzeug_steht
+        show_state: true
+    - type: map
+      entities:
+      - device_tracker.van_standort
+      theme_mode: auto
+      aspect_ratio: '4:3'
+      default_zoom: 13
+    - type: glance
+      columns: 2
+      entities:
+      - entity: sensor.van_netzwerk_fahrzeuggeschwindigkeit
+        name: Tempo
+      - entity: sensor.van_netzwerk_letzter_scan
+        name: Letzter Scan
+    - type: tile
+      entity: button.van_netzwerk_standort_jetzt_abfragen
+      name: Standort jetzt abfragen
+      icon: mdi:crosshairs-gps
+  - type: grid
+    cards:
+    - type: heading
+      heading: Werkzeuge
+      heading_style: subtitle
+      icon: mdi:tools
+    - type: tile
+      entity: button.van_netzwerk_speedtest_starten
+      name: Speedtest (nur WLAN)
+      icon: mdi:speedometer
+    - type: tile
+      entity: button.van_netzwerk_router_jetzt_sichern
+      name: Router jetzt sichern
+      icon: mdi:content-save-cog
+    - type: tile
+      entity: sensor.van_netzwerk_letzte_router_sicherung
+      name: Letzte Sicherung
+      icon: mdi:content-save-check
+      vertical: true
+    - type: tile
+      entity: button.van_netzwerk_router_neu_starten
+      name: Router neu starten
+      icon: mdi:restart-alert
+      color: red
+      tap_action:
+        action: perform-action
+        perform_action: button.press
+        target:
+          entity_id: button.van_netzwerk_router_neu_starten
+        confirmation:
+          text: Router wirklich neu starten? Fuer etwa zwei Minuten gibt es dann kein Internet im Fahrzeug.
+    - type: conditional
+      conditions:
+      - condition: state
+        entity: sensor.van_netzwerk_letzter_fehler
+        state_not: ''
+      card:
+        type: markdown
+        content: '**Letzte Meldung:** {{ states(''sensor.van_netzwerk_letzter_fehler'') }}'
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Feinjustierung
+      heading_style: subtitle
+      icon: mdi:tune
+    - type: entities
+      show_header_toggle: false
+      entities:
+      - entity: input_boolean.van_suggest_5g_switch
+        name: Wechsel vorschlagen
+      - entity: input_number.van_switch_threshold
+        name: Ab welchem Faktor
+      - type: divider
+      - entity: input_number.van_assumed_bandwidth
+        name: Kanalbandbreite
+      - entity: input_number.van_cell_load_factor
+        name: Realismusfaktor
+      - type: section
+        label: 'Schaetzung nach ein paar Wochen nachjustieren: echten Speedtest ueber die SIM mit dem
+          geschaetzten Wert vergleichen und den Realismusfaktor anpassen.'

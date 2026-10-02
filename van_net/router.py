@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shlex
 import threading
@@ -43,6 +44,7 @@ class Router:
         self.timeout = timeout
         self._client = None
         self._device_cache = None
+        self._thermal_cfg = None
         self._lock = threading.Lock()
 
     # ---------------------------------------------------------------- Verbindung
@@ -311,14 +313,20 @@ class Router:
             "bitrate": data.get("bitrate"),
         }
 
-    def connect_wifi(self, ssid: str, key=None, encryption=None) -> None:
-        """Client-Schnittstelle auf ein neues Netz umkonfigurieren."""
+    def connect_wifi(self, ssid: str, key=None, encryption=None,
+                     bssid=None) -> None:
+        """
+        Client-Schnittstelle auf ein neues Netz umkonfigurieren.
+
+        bssid bindet an genau eine Basisstation. Das ist bei Anlagen mit
+        mehreren Accesspoints unter derselben SSID gewollt -- ohne Bindung
+        nimmt der Client den mit dem staerksten Signal, und der hat nicht
+        zwangslaeufig das beste Internet. Ohne bssid wird eine bestehende
+        Bindung entfernt, sonst scheitert jeder Wechsel in ein anderes Netz.
+        """
         section = self.find_client_iface()
         enc = encryption or ("psk2" if key else "none")
 
-        # Feste BSSID-Bindung entfernen. Bleibt sie stehen, verbindet sich der
-        # Client nur mit genau diesem einen Access Point und scheitert an
-        # jedem anderen Netz.
         for stale in ("bssid", "_bgscan_enabled"):
             try:
                 self.run(f"uci -q delete wireless.{section}.{stale}")
@@ -330,6 +338,8 @@ class Router:
             f"wireless.{section}.encryption": enc,
             f"wireless.{section}.disabled": "0",
         }
+        if bssid:
+            assignments[f"wireless.{section}.bssid"] = shlex.quote(bssid)
         if key:
             assignments[f"wireless.{section}.key"] = shlex.quote(key)
         else:
@@ -342,7 +352,8 @@ class Router:
         self.run("wifi reload", timeout=40)
         # Nach einem Reload kann die Schnittstelle einen neuen Suffix haben
         self._device_cache = None
-        log.info("WLAN-Client auf '%s' umgestellt (encryption=%s)", ssid, enc)
+        log.info("WLAN-Client auf '%s' umgestellt (encryption=%s%s)", ssid, enc,
+                 f", BSSID {bssid}" if bssid else "")
 
     def disconnect_wifi(self) -> None:
         section = self.find_client_iface()
@@ -377,6 +388,182 @@ class Router:
         if mode:
             out["net_mode"] = str(mode)
         return out
+
+    def link_quality(self, host: str = "1.1.1.1", count: int = 12) -> dict:
+        """
+        Latenz, Jitter und Paketverlust des aktuellen Uplinks.
+
+        Gemessen auf dem Router, nicht auf dem Pi -- so liegt kein eigenes
+        LAN-Segment dazwischen und das Ergebnis beschreibt wirklich die
+        Strecke vom Router ins Netz.
+
+        Rueckgabe: {'latency_ms', 'jitter_ms', 'loss'} oder {}.
+        """
+        try:
+            raw = self.run(
+                f"ping -q -c {int(count)} -W 2 {shlex.quote(host)} 2>&1 || true",
+                timeout=count * 3 + 20)
+        except RouterError:
+            return {}
+
+        loss = 1.0
+        m = re.search(r"(\d+(?:\.\d+)?)% packet loss", raw)
+        if m:
+            loss = min(1.0, float(m.group(1)) / 100.0)
+
+        out = {"loss": round(loss, 3)}
+
+        # BusyBox: 'round-trip min/avg/max = 8.9/13.8/18.8 ms'
+        m = re.search(r"min/avg/max(?:/mdev)?\s*=\s*([\d.]+)/([\d.]+)/([\d.]+)", raw)
+        if m:
+            lo, avg, hi = (float(x) for x in m.groups())
+            out["latency_ms"] = round(avg, 1)
+            out["jitter_ms"] = round(hi - lo, 1)
+        elif loss >= 1.0:
+            out["latency_ms"] = None
+            out["jitter_ms"] = None
+        return out
+
+    # ---------------------------------------------------------------- Thermik
+
+    def thermal(self) -> dict:
+        """
+        Modemtemperatur und ob gedrosselt wird.
+
+        Der RUTC50 kennt drei Zonen (get_thermal_cfg): operate_normal,
+        operate_up und extreme_up. Verlaesst die Temperatur die
+        Normalzone, senkt das Modem Sendeleistung und Datenrate.
+        Genau dieser Zustand laesst sich aus den beiden Abfragen ableiten.
+
+        Rueckgabe: {'temp_c', 'zone', 'throttling', 'limit_c'} oder {}.
+        """
+        try:
+            raw = self.run_json("ubus call gsm.modem0 get_temperature '{}'",
+                                timeout=10)
+        except RouterError:
+            return {}
+
+        temp = None
+        for key in ("temperature", "temp", "value"):
+            if isinstance(raw.get(key), (int, float)):
+                temp = float(raw[key])
+                break
+        if temp is None:
+            return {}
+
+        # Manche Firmware liefert Zehntelgrad als Ganzzahl
+        if temp > 200:
+            temp /= 10.0
+
+        if self._thermal_cfg is None:
+            try:
+                self._thermal_cfg = self.run_json(
+                    "ubus call gsm.modem0 get_thermal_cfg '{}'", timeout=10)
+            except RouterError:
+                self._thermal_cfg = {}
+
+        cfg = self._thermal_cfg or {}
+        normal_max = cfg.get("operate_normal_zone_max")
+        extreme_min = cfg.get("extreme_up_zone_min")
+
+        # Ohne Zonenangaben ein konservativer Richtwert fuer 5G-Module
+        if not isinstance(normal_max, (int, float)):
+            normal_max = 70
+
+        zone = "normal"
+        if isinstance(extreme_min, (int, float)) and temp >= extreme_min:
+            zone = "extrem"
+        elif temp >= normal_max:
+            zone = "erhoeht"
+
+        return {
+            "temp_c": round(temp, 1),
+            "zone": zone,
+            "throttling": zone != "normal",
+            "limit_c": round(float(normal_max), 1),
+        }
+
+    # ---------------------------------------------------------------- Sicherung
+
+    def backup(self, local_path: str) -> str:
+        """
+        Router-Konfiguration sichern und per SFTP herholen.
+
+        Die Sicherung muss vom Router weg: Ein defektes Geraet nimmt seine
+        eigene Sicherung mit. Deshalb landet sie auf dem Pi.
+        """
+        remote = "/tmp/van-backup.tar.gz"
+        self.run(f"rm -f {remote}", timeout=15)
+        self.run(f"sysupgrade -b {remote}", timeout=90)
+
+        size = self.run(f"wc -c < {remote}", timeout=15).strip()
+        if not size.isdigit() or int(size) < 1024:
+            raise RouterError(f"Sicherung unplausibel klein ({size} Bytes)")
+
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with self._lock:
+            client = self._ensure()
+            sftp = client.open_sftp()
+            try:
+                sftp.get(remote, local_path)
+            finally:
+                sftp.close()
+        self.run(f"rm -f {remote}", timeout=15)
+
+        log.info("Router-Sicherung geholt: %s (%s Bytes)", local_path, size)
+        return local_path
+
+    # ---------------------------------------------------------------- SIM
+
+    def sim_status(self) -> dict:
+        """Welcher Kartenschacht bzw. eSIM-Profil ist aktiv?"""
+        out = {}
+        try:
+            data = self.run_json("ubus call gsm.modem0 get_mod_status '{}'",
+                                 timeout=10)
+            if isinstance(data, dict):
+                out.update({k: v for k, v in data.items()
+                            if isinstance(v, (str, int, float))})
+        except RouterError:
+            pass
+        try:
+            iccid = self.run("gsmctl -J 2>/dev/null || true", timeout=10).strip()
+            if iccid and iccid.isdigit():
+                out["iccid"] = iccid
+        except RouterError:
+            pass
+        return out
+
+    def switch_sim(self, position: int, esim_profile=None) -> None:
+        """
+        Auf einen anderen Kartenschacht oder ein eSIM-Profil umschalten.
+
+        Mehrere Wege, weil sich der Befehl zwischen RutOS-Versionen
+        unterscheidet. Der erste, der ohne Fehler durchlaeuft, gewinnt.
+        """
+        attempts = [
+            f"ubus call gsm.modem0 set_sim "
+            f"{shlex.quote(json.dumps({'sim': int(position)}))}",
+            f"ubus call sim_switch switch "
+            f"{shlex.quote(json.dumps({'modem_id': '2-1.1', 'sim': int(position)}))}",
+            f"gsmctl -A 'AT+QUIMSLOT={int(position)}'",
+        ]
+        if esim_profile is not None:
+            attempts.insert(0,
+                f"ubus call esim.modem0 enable_profile "
+                f"{shlex.quote(json.dumps({'profile': int(esim_profile)}))}")
+
+        last = None
+        for cmd in attempts:
+            try:
+                self.run(cmd, timeout=30)
+                log.info("SIM-Wechsel erfolgreich: %s", cmd.split()[2])
+                return
+            except RouterError as exc:
+                last = exc
+                continue
+        raise RouterError(
+            f"Kein SIM-Wechsel-Befehl hat funktioniert. Letzter Fehler: {last}")
 
     # ---------------------------------------------------------------- WAN / Failover
 

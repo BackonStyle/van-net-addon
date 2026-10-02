@@ -18,7 +18,7 @@
 # -------------------------------------------------------------------------
 # AUF EINEM NEUEN GERAET ANZUPASSEN -- genau eine Stelle:
 #
-#   notify.mobile_app_daniphone15pro   (3x, jeweils hinter "- action:")
+#   notify.mobile_app_HANDY   (jedes Vorkommen, hinter "- action:")
 #
 # Der richtige Name steht unter:
 #   Entwicklerwerkzeuge -> Aktionen -> Suchfeld "notify.mobile"
@@ -28,6 +28,14 @@
 # in der Oberflaeche aenderbar, ohne diese Datei anzufassen.
 # -------------------------------------------------------------------------
 # ============================================================================
+
+# Das Passwortfeld nicht in die Datenbank schreiben. Der Agent leert es nach
+# dem Verbinden sofort wieder, aber ohne diesen Ausschluss stuende es bis
+# dahin im Verlauf und in der Logbuch-Ansicht.
+recorder:
+  exclude:
+    entities:
+      - text.van_netzwerk_wlan_passwort
 
 input_text:
   van_teltonika_sinr_entity:
@@ -148,6 +156,32 @@ template:
 # Automationen
 # ----------------------------------------------------------------------------
 
+# ============================================================================
+# Befehle an Fully Kiosk, die die Integration nicht selbst anbietet.
+#
+# Die vollstaendigen Adressen gehoeren nach secrets.yaml, damit das
+# Fernverwaltungs-Passwort nicht in dieser Datei steht:
+#
+#   tablet_sleep_url: "http://192.168.1.230:2323/?cmd=forceSleep&type=json&password=DEINPASSWORT"
+#   tablet_screenon_url: "http://192.168.1.230:2323/?cmd=screenOn&type=json&password=DEINPASSWORT"
+#
+# Port 2323 ist die Standard-Fernverwaltung von Fully Kiosk.
+# ============================================================================
+
+rest_command:
+  # Echter Tiefschlaf, nicht nur Bildschirm aus. Danach ist das Tablet fuer
+  # Home Assistant nicht mehr erreichbar -- aufwecken per Power-Knopf.
+  tablet_tiefschlaf:
+    url: !secret tablet_sleep_url
+    method: GET
+    timeout: 10
+
+  # Weckversuch -- klappt nur, solange das Geraet noch erreichbar ist.
+  tablet_wecken:
+    url: !secret tablet_screenon_url
+    method: GET
+    timeout: 10
+
 automation:
   # --- Captive Portal: Automatik gescheitert, QR-Code anbieten ---------------
   - id: van_portal_manual_qr
@@ -161,7 +195,7 @@ automation:
           ssid: "{{ trigger.payload_json.ssid }}"
           url: "{{ trigger.payload_json.url }}"
           qr: "{{ trigger.payload_json.qr }}"
-      - action: notify.mobile_app_daniphone15pro
+      - action: notify.mobile_app_HANDY
         data:
           title: "WLAN-Portal braucht dich"
           message: >
@@ -238,7 +272,7 @@ automation:
           {% set thr = states('input_number.van_switch_threshold') | float(1.5) %}
           {{ wifi > 0 and mob > 0 and mob > wifi * thr }}
     actions:
-      - action: notify.mobile_app_daniphone15pro
+      - action: notify.mobile_app_HANDY
         data:
           title: "Mobilfunk waere schneller"
           message: >
@@ -279,7 +313,7 @@ automation:
         to: "SIM erzwingen"
         for: "04:00:00"
     actions:
-      - action: notify.mobile_app_daniphone15pro
+      - action: notify.mobile_app_HANDY
         data:
           title: "Noch auf SIM erzwungen"
           message: >
@@ -288,6 +322,188 @@ automation:
             actions:
               - action: "VAN_BACK_TO_AUTO"
                 title: "Auf Auto zurueck"
+
+  # --- Monatliche Router-Sicherung ------------------------------------------
+  # Die Sicherung landet auf dem Pi unter /share/van-net/backups/, nicht auf
+  # dem Router -- ein defektes Geraet nimmt seine eigene Sicherung mit.
+  # Es werden die letzten zwoelf behalten, also ein Jahr.
+  - id: van_monthly_backup
+    alias: "Van: Router monatlich sichern"
+    mode: single
+    triggers:
+      - trigger: time
+        at: "03:17:00"
+    conditions:
+      - condition: template
+        value_template: "{{ now().day == 1 }}"
+    actions:
+      - action: button.press
+        target:
+          entity_id: button.van_netzwerk_router_jetzt_sichern
+
+  # --- Drosselung wegen Hitze -----------------------------------------------
+  - id: van_thermal_throttle
+    alias: "Van: Modem drosselt wegen Temperatur"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.van_netzwerk_modem_drosselt
+        to: "on"
+        for: "00:03:00"
+    actions:
+      - action: notify.mobile_app_HANDY
+        data:
+          title: "Modem wird heiss"
+          message: >-
+            {{ states('sensor.van_netzwerk_modemtemperatur') }} °C — der Router
+            senkt Sendeleistung und Datenrate. Mobilfunk ist jetzt langsamer
+            als sonst.
+
+  # ==========================================================================
+  # Tablet im Fahrzeug (Fire HD 10 mit Fully Kiosk)
+  #
+  # Diese vier Automationen sind nur sinnvoll, wenn die Fully-Kiosk-
+  # Integration eingerichtet ist. Ohne sie laufen sie ins Leere und
+  # protokollieren eine Warnung -- dann einfach loeschen.
+  #
+  # ANZUPASSEN: switch.tablet_ladung ist der Schalter, der die 12-V-
+  # Stromversorgung des Tablets schaltet. Hast du keinen, loesche die
+  # beiden Akku-Automationen und versorge das Tablet ueber Zuendungsstrom.
+  # ==========================================================================
+
+  # --- Ladung im Schonbereich halten ---------------------------------------
+  # Zwei Bereiche, je nach Standort:
+  #   unterwegs  25-80 %  -- genug Reserve fuer den Tag
+  #   zu Hause   35-50 %  -- Lagerniveau, schont die Zelle am meisten
+  #
+  # Dauerladung bei 100 % plus Hitze im Fahrzeug laesst Lithiumzellen
+  # aufquellen. Rund 50 % ist der beste Ladestand fuer lange Standzeiten.
+  - id: van_tablet_charge_band
+    alias: "Tablet: Ladung im Schonbereich halten"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: sensor.van_tablet_battery
+      - trigger: zone
+        entity_id: device_tracker.van_standort
+        zone: zone.home
+        event: enter
+      - trigger: zone
+        entity_id: device_tracker.van_standort
+        zone: zone.home
+        event: leave
+    variables:
+      zuhause: "{{ is_state('device_tracker.van_standort', 'home') }}"
+      untere: "{{ 35 if zuhause else 25 }}"
+      obere: "{{ 50 if zuhause else 80 }}"
+      stand: "{{ states('sensor.van_tablet_battery') | float(-1) }}"
+      laedt: "{{ is_state('switch.tablet_ladung', 'on') }}"
+    conditions:
+      - condition: template
+        value_template: "{{ stand >= 0 }}"
+    actions:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ stand < untere and not laedt }}"
+            sequence:
+              - action: switch.turn_on
+                target:
+                  entity_id: switch.tablet_ladung
+          - conditions:
+              - condition: template
+                value_template: "{{ stand > obere and laedt }}"
+            sequence:
+              - action: switch.turn_off
+                target:
+                  entity_id: switch.tablet_ladung
+
+  # --- Tiefschlaf an der Heimatadresse -------------------------------------
+  # Ein echtes Herunterfahren ist auf einem Fire-Tablet ohne Root nicht
+  # moeglich -- Fully Kiosk kennt 'shutdownDevice' nur fuer gerootete
+  # Geraete. forceSleep ist die naechstbeste Stufe: echter Tiefschlaf,
+  # rund 0,1 W statt 0,5 W bei nur dunklem Bildschirm.
+  #
+  # Danach ist das Tablet fuer Home Assistant nicht mehr erreichbar.
+  # Aufwecken: Power-Knopf am Geraet. Genau so gewollt.
+  - id: van_tablet_sleep_home
+    alias: "Tablet: Tiefschlaf zu Hause"
+    mode: single
+    triggers:
+      - trigger: zone
+        entity_id: device_tracker.van_standort
+        zone: zone.home
+        event: enter
+    conditions:
+      - condition: state
+        entity_id: binary_sensor.van_netzwerk_fahrzeug_steht
+        state: "on"
+    actions:
+      # Erst auf Lagerniveau bringen, dann schlafen legen
+      - choose:
+          - conditions:
+              - condition: numeric_state
+                entity_id: sensor.van_tablet_battery
+                above: 50
+            sequence:
+              - action: switch.turn_off
+                target:
+                  entity_id: switch.tablet_ladung
+      - delay: "00:00:20"
+      - action: rest_command.tablet_tiefschlaf
+        data: {}
+
+  # --- Bildschirm nachts dunkler, nur unterwegs ----------------------------
+  - id: van_tablet_dim_night
+    alias: "Tablet: Helligkeit nach Tageszeit"
+    mode: single
+    triggers:
+      - trigger: sun
+        event: sunset
+        id: abend
+      - trigger: sun
+        event: sunrise
+        id: morgen
+    conditions:
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: device_tracker.van_standort
+            state: "home"
+    actions:
+      - action: light.turn_on
+        target:
+          entity_id: light.van_tablet_screen
+        data:
+          brightness_pct: "{{ 15 if trigger.id == 'abend' else 90 }}"
+
+  # --- Tablet nicht mehr erreichbar ----------------------------------------
+  # Haeufigste Ursachen: Hitzeabschaltung, Akku leer, Fully Kiosk abgestuerzt
+  # oder ein Fire-OS-Update hat den Autostart zerstoert.
+  - id: van_tablet_offline
+    alias: "Tablet: nicht erreichbar"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: sensor.van_tablet_battery
+        to: "unavailable"
+        for: "00:15:00"
+    conditions:
+      # Nur unterwegs melden. Zu Hause darf das Tablet nach Wochen
+      # Standzeit leerlaufen -- eine Warnung dafuer waere eine
+      # Fehlmeldung, und Fehlmeldungen trainieren das Wegklicken.
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: device_tracker.van_standort
+            state: "home"
+    actions:
+      - action: notify.mobile_app_HANDY
+        data:
+          title: "Tablet antwortet nicht"
+          message: >-
+            Seit 15 Minuten keine Verbindung. Mögliche Ursachen:
+            Hitzeabschaltung, leerer Akku oder Fully Kiosk ist abgestürzt.
 
   - id: van_back_to_auto
     alias: "Van: Zurueck auf Auto"
