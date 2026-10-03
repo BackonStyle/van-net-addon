@@ -333,15 +333,20 @@ class Router:
             except RouterError:
                 pass
 
+        # ROHWERTE, nicht quotieren! uci_set() setzt den gesamten Ausdruck
+        # "schluessel=wert" bereits in Anfuehrungszeichen. Eine zweite
+        # Quotierung hier wuerde von der ersten geschuetzt und landete damit
+        # als echtes Zeichen im Wert: der Router suchte dann ein Netz namens
+        # 'FRITZ!Box 7590 MP' -- mit Apostrophen -- und fand nie eines.
         assignments = {
-            f"wireless.{section}.ssid": shlex.quote(ssid),
+            f"wireless.{section}.ssid": ssid,
             f"wireless.{section}.encryption": enc,
             f"wireless.{section}.disabled": "0",
         }
         if bssid:
-            assignments[f"wireless.{section}.bssid"] = shlex.quote(bssid)
+            assignments[f"wireless.{section}.bssid"] = bssid
         if key:
-            assignments[f"wireless.{section}.key"] = shlex.quote(key)
+            assignments[f"wireless.{section}.key"] = key
         else:
             # Alten Schluessel entfernen, sonst scheitert die Assoziation
             try:

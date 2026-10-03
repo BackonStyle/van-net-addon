@@ -68,6 +68,23 @@ es, kommt ein QR-Code aufs Handy.
 **Bedienung in Home Assistant.** Uplink-Umschalter, SIM-Auswahl (zwei
 Kartenschächte, zwei eSIM-Profile), WLAN-Dropdown mit Passwortfeld,
 Speedtest, Router-Neustart mit Rückfrage, monatliche Konfigurationssicherung.
+Jede Kachel löst direkt aus — ohne Zwischenfenster.
+
+**Standort mit Anschrift.** Position alle 30 Minuten, auf Knopfdruck auch
+sofort. Unter der Karte steht die Straße mit Hausnummer, aufgelöst über
+OpenStreetMap. Ohne GPS-Fix wird nichts gemeldet — lieber keine Angabe als
+eine falsche.
+
+**Geordnetes Herunterfahren und Router-Neustart.** Beide hinter derselben
+PIN, abgefragt in einem kompakten Fenster mit einem Zahlenfeld. Das Stromkabel
+zu ziehen beschädigt früher oder später die Datenbank, und auf einer SD-Karte
+ist das kein seltener Unfall.
+
+**Eine Oberfläche, die man im Vorbeigehen liest.** Die Verbindungsart steht
+fett und mittig mit farbigem Symbol — grünes Funksymbol für WLAN, rot
+durchgestrichen für Mobilfunk. WLAN-bezogene Kacheln erscheinen nur, solange
+das WLAN auch trägt. Der Verbindungsablauf liegt auf einer Unterseite, damit
+die Übersicht ohne Scrollen auf ein 10-Zoll-Tablet passt.
 
 **Mobilfunk-Durchsatz geschätzt**, nicht gemessen — Messen würde
 Datenvolumen kosten. Aus SINR und RSRP nach Shannon mit 256QAM-Deckel,
@@ -116,6 +133,7 @@ ausgelöst.
 | Router | Teltonika RUTC50, RUTX50 oder RUTM50 · RutOS 7.x |
 | **Pflicht** | **zwei WLAN-Bänder**, SSH aktiv, `mwan3` vorhanden |
 | Raspberry Pi | 4B, 2 GB (4 GB empfohlen), **aktiv gekühlt**, am LAN-Kabel |
+| Netzteil | **5,1 V / 3 A** — 1 A reicht nicht, der Pi startet dann nicht durch |
 | Home Assistant | OS 14+, Core 2024.6+ |
 | Mobilfunk | SIM oder eSIM mit Datentarif |
 
@@ -148,6 +166,12 @@ Gesucht: wie die Roaming-Sperre in RutOS 7.x intern heißt und ob sie per
 (`set_sim`, `sim_switch switch`, `AT+QUIMSLOT`). Welcher auf welcher
 Firmware funktioniert, ist unklar — Rückmeldungen von anderen Modellen sind
 wertvoll.
+
+**GPS-Geschwindigkeit kalibrieren.** `_normalise_gps()` in `router.py`
+rechnet m/s in km/h um, wenn der Wert klein genug aussieht. Diese Heuristik
+ist nicht gegen eine echte Fahrt geprüft. Wer bei bekannter Geschwindigkeit
+`ubus call gpsd info` mit dem Tacho vergleicht und das Ergebnis meldet,
+schließt die letzte Lücke in der Standzeit-Erkennung.
 
 **Captive-Portal-Muster.** Die Wortliste `ACCEPT_PATTERNS` in `portal.py`
 deckt Deutsch, Englisch, Französisch, Italienisch und Spanisch ab. Jedes

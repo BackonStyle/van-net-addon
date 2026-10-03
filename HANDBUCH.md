@@ -121,8 +121,11 @@ nur auf deinen Klick.**
 | Beste Basisstation messen | nur bei mehreren Accesspoints |
 | Speedtest | nur über WLAN |
 | Standort abfragen | außerhalb des 30-Minuten-Takts |
-| Router sichern | Konfiguration auf den Pi holen |
-| Router neu starten | mit Rückfrage |
+| Anschrift zur Position | Straße und Hausnummer, über OpenStreetMap |
+| Router sichern | eine Kachel: zeigt das Datum, löst aus |
+| Router neu starten | mit PIN |
+| Pi herunterfahren | mit PIN |
+| GPS-Empfang | Hinweis, wenn kein Fix vorliegt |
 
 ### Tablet als festes Bedienpanel
 
@@ -144,7 +147,6 @@ von selbst aus und auf Reisen wieder an. Siehe Kapitel 8.
 
 ---
 
-<div class="pagebreak kompakt">
 
 ## 2. Mindestanforderungen
 
@@ -162,9 +164,8 @@ Andere OpenWRT-Router sind nicht getestet. Vorausgesetzt werden `uci`, `ubus`
 und `mwan3`.
 
 > **K.-o.-Kriterium:** Bei nur einem Funkchip — so beim RUTC50 — laufen
-> Accesspoint und Client nur auf **verschiedenen Bändern**. Deine Geräte
-> hängen am 5-GHz-Netz, 2,4 GHz gehört der Suche; Geräte, die nur 2,4 GHz
-> können, lassen sich nicht anschließen. Ein Einband-Router ist unbrauchbar.
+> Accesspoint und Client nur auf **verschiedenen Bändern**. Deine Geräte hängen
+> am 5-GHz-Netz, 2,4 GHz gehört der Suche. Ein Einband-Router ist unbrauchbar.
 
 ### Raspberry Pi
 
@@ -175,7 +176,9 @@ und `mwan3`.
 | Speicher | 32 GB Karte, ~2 GB belegt | SSD über USB |
 | Kühlung | passiv | **aktiv (Lüfter)** |
 | Anbindung | **LAN-Kabel zum Router** | LAN-Kabel |
+| Netzteil | **5,1 V / 3 A** | 3 A, im Fahrzeug gepuffert |
 
+- **Strom:** Ein 1-A-Netzteil reicht nicht. Der Pi zieht beim Start über 1,2 A; bricht die Spannung ein, kommt er nicht durch — der Router zeigt dann Link, aber kein Paket. Beim Anlassen des Motors entsteht dasselbe Bild.
 - **Kühlung:** 60 °C im Fahrzeug plus Browser-Last — ohne Lüfter drosselt der Pi.
 - **Anbindung:** Über WLAN verlierst du beim Bandwechsel die Steuerverbindung.
 - **Bei 1–2 GB:** `portal_browser_enabled` auf `false` spart ~500 MB.
@@ -184,7 +187,7 @@ und `mwan3`.
 
 | | |
 |---|---|
-| Home Assistant OS | 14+ · getestet mit 18.3 |
+| Home Assistant OS | 14+ · getestet mit 17.3 |
 | Home Assistant Core | 2024.6+ · getestet mit 2026.9.3 |
 | Terminal-App | **vor der Installation nötig** — sonst kein Skriptstart |
 | Mosquitto broker | installiert der Konfigurator selbst |
@@ -192,9 +195,7 @@ und `mwan3`.
 | SIM / eSIM | eine Karte mit Datentarif; zwei möglich, umschaltbar |
 | Tablet *(optional)* | Android ab 10″, getestet Fire HD 10 (11. Gen.) · App **Fully Kiosk Plus**, ~7 € · **nie in direkter Sonne** montieren, siehe Kapitel 8 |
 
-</div>
 
-<div class="pagebreak"></div>
 
 ## 3. Wie es aufgebaut ist
 
@@ -373,7 +374,29 @@ gravierendste Fund des Projekts.
 
 ### 4.6 GPS einschalten
 
-Unter *Dienste → GPS* aktivieren. Dann im Freien prüfen:
+**Ab Werk ist GPS abgeschaltet.** Das wird leicht uebersehen, weil der Dienst
+trotzdem laeuft — er hat nur keine Instanz. Erst pruefen:
+
+```sh
+uci get gps.gpsd.enabled
+```
+
+Steht dort `0`, einschalten. Die drei weiteren Satellitensysteme gleich mit:
+
+```sh
+uci set gps.gpsd.enabled='1'
+uci set gps.gpsd.galileo_sup='1'
+uci set gps.gpsd.glonass_sup='1'
+uci set gps.gpsd.beidou_sup='1'
+uci commit gps
+/etc/init.d/gpsd restart
+```
+
+Galileo, GLONASS und BeiDou kosten nichts und verkuerzen den ersten Fix
+deutlich — in Staedten und Taelern ist das der Unterschied zwischen sofort
+und mehreren Minuten. Das Modul empfaengt sie ohnehin.
+
+Dann im Freien pruefen:
 
 ```sh
 ubus call gpsd info '{}'
@@ -381,6 +404,19 @@ ubus call gpsd info '{}'
 
 Es müssen echte Koordinaten erscheinen, nicht Null. **Merke dir das Feld
 `speed`** — es wird in Kapitel 8 kalibriert.
+
+> **Woran man es erkennt, wenn GPS fehlt:** `gpsctl -i` meldet
+> `Unable to retrieve valid gpsd response: Not found`, und
+> `/etc/init.d/gpsd status` sagt `active with no instances`. Das ist **nicht**
+> „kein Empfang" — bei fehlendem Fix antwortet der Dienst und liefert nur
+> keine Koordinaten.
+
+**Ohne GPS steht mehr still als die Karte.** Die automatische WLAN-Suche
+setzt voraus, dass das Fahrzeug drei Minuten unter 3 km/h war. Ohne
+Positionsdaten gilt es nie als stehend, und der automatische Scan loest nie
+aus — der Knopf im Dashboard funktioniert, die Automatik nicht. Wer sich
+wundert, warum unterwegs nie von selbst ein Netz gefunden wird, pruefe
+zuerst hier.
 
 ---
 
@@ -420,6 +456,65 @@ gesichert, nicht überschrieben.
 
 > **Tipp:** Baue, solange der Router noch an einem Festnetzanschluss hängt.
 > Der Download über Mobilfunk kostet sonst knapp ein Gigabyte.
+
+---
+
+### 5.3 secrets.yaml — ohne diese drei Zeilen startet nichts
+
+Die Package-Datei verweist an drei Stellen mit `!secret` auf
+`/config/secrets.yaml`. **Fehlt auch nur ein Eintrag, startet Home Assistant
+nicht**, sondern faellt in den abgesicherten Modus — und die Fehlermeldung
+zeigt auf `van_net.yaml` statt auf die fehlende Zeile. Das kostet
+erfahrungsgemaess eine Viertelstunde Suche.
+
+Der Installer legt die Eintraege mit Platzhaltern an. Wer von Hand
+installiert, ergaenzt sie selbst:
+
+```yaml
+tablet_sleep_url: "http://192.168.1.230:2323/?cmd=forceSleep&type=json&password=DEINPASSWORT"
+tablet_screenon_url: "http://192.168.1.230:2323/?cmd=screenOn&type=json&password=DEINPASSWORT"
+van_shutdown_pin: "0000"
+```
+
+| Eintrag | wofuer | wann anpassen |
+|---|---|---|
+| `tablet_sleep_url` | Tiefschlaf des Bedienpanels | mit dem Fully-Passwort aus 8.3 |
+| `tablet_screenon_url` | Bildschirm wieder an | dito |
+| `van_shutdown_pin` | Abschalt-Knopf | **sofort** — Vorgabe ist 0000 |
+
+> Das Fully-Passwort darf keine Zeichen enthalten, die in einer Internetadresse
+> eine eigene Bedeutung haben: `&`, `=`, `?`, `#`, `+` und Leerzeichen zerlegen
+> den Aufruf. Buchstaben und Ziffern sind unproblematisch.
+
+### 5.4 Den Pi geordnet herunterfahren
+
+Das Stromkabel zu ziehen beschaedigt frueher oder spaeter die Datenbank. Home
+Assistant schreibt staendig, und eine SD-Karte verzeiht einen Stromverlust
+mitten im Schreibvorgang nicht — man merkt es erst beim naechsten Start.
+
+Im Terminal:
+
+```sh
+ha host shutdown
+```
+
+Oder ueber die Kachel **Pi herunterfahren** im Bereich *Werkzeuge*. Sie oeffnet
+ein kompaktes Fenster mit **genau einem Zahlenfeld** fuer die PIN; auf einem
+Tablet geht dabei die Zifferntastatur auf. Dieselbe PIN sichert den
+Router-Neustart.
+
+> **Keine PIN mit fuehrender Null.** Das Feld ist ein Zahlenfeld, und `0123`
+> kommt dort als `123` an — die Pruefung schluege dann immer fehl.
+
+Beide Knoepfe melden bei falscher Eingabe „PIN falsch" und tun nichts. Die PIN
+steht in `secrets.yaml` unter `van_shutdown_pin`, nicht im Dashboard.
+
+Warum ueberhaupt eine PIN: die Kachel sitzt auf einem Bedienpanel im Fahrzeug.
+Ein versehentlicher Druck schaltet das gesamte System ab, und danach hilft nur
+noch der Griff ans Geraet.
+
+Nach etwa dreissig Sekunden ist er aus. Der Pi 4B zeigt das nicht an, aber die
+gruene LED hoert auf zu blinken und bleibt dunkel. Dann darf der Strom weg.
 
 ---
 
@@ -469,14 +564,58 @@ beides: es legt `/config/dashboards/van-internet.yaml` ab und trägt den
 Verweis in die `configuration.yaml` ein. Nach dem Neustart erscheint
 **Internet** als eigener Eintrag in der Seitenleiste.
 
-Es entsteht eine Seite mit acht Abschnitten — Verbindung, WLAN, Netz
-verbinden, Anmeldeseite, Mobilfunk, Fahrzeug, Werkzeuge und Feinjustierung.
-Verwendet werden ausschließlich eingebaute Karten, kein HACS. Am Telefon
-ordnet sich alles einspaltig.
+Es entsteht eine Seite mit drei sichtbaren Abschnitten — Verbindung,
+Mobilfunk und Fahrzeug — dazu die Anmeldeseite, die nur bei Bedarf erscheint,
+und **zwei Unterseiten**: eine fuer den WLAN-Verbindungsablauf, eine fuer die
+Werkzeuge. Verwendet werden ausschliesslich eingebaute Karten,
+kein HACS. Am Telefon ordnet sich alles einspaltig.
 
-Drei Karten erscheinen nur bei Bedarf: der QR-Code bei offener Anmeldeseite,
-die Drosselungswarnung bei Hitze und die Messung der Basisstationen, sobald
-mehrere gefunden wurden.
+**Verbindung** traegt alles Zusammengehoerige. Ganz oben steht der Netzname
+ueber die volle Breite — die Angabe, die man unterwegs am haeufigsten sucht.
+Darunter halbbreite Kacheln, zwei je Reihe: Uplink-Modus, Zustandsanzeige,
+Signal, gemessenes Tempo, Empfehlung, der Einstieg in den Verbindungsablauf
+und die Werkzeuge. Die vier WLAN-bezogenen
+Kacheln erscheinen nur, solange das WLAN auch wirklich die Internetquelle ist
+— auf Mobilfunk schrumpft der Bereich von selbst.
+
+Die Zustandsanzeige ist bewusst **keine** Kachel, sondern eine Markdown-Karte:
+nur dort lassen sich Schriftschnitt, Ausrichtung und Symbolfarbe frei setzen.
+
+| Uplink | Anzeige |
+|---|---|
+| WLAN | gruenes `mdi:wifi`, fett **WLAN** |
+| Mobilfunk | rotes `mdi:wifi-off` (durchgestrichen), fett **Mobilfunk** |
+| keiner | rotes `mdi:network-off`, fett **Kein Internet** |
+
+Die Farben kommen aus den Themenfarben (`--success-color`, `--error-color`)
+und passen sich hellem wie dunklem Erscheinungsbild an.
+
+**Zwei Abläufe liegen auf Unterseiten**, erreichbar ueber je eine Kachel
+im Verbindungsbereich: das Verbinden mit einem Netz und die Werkzeuge
+(Speedtest, Sicherung, Neustart, Herunterfahren). Der Pfeil oben links kommt
+zurueck. `subview: true` haelt die Seite
+aus der Navigation heraus, sie ist also nur ueber die Kachel erreichbar. Ein
+frei schwebendes Fenster kann Home Assistant aus einer Kachel heraus nicht
+oeffnen -- eine Unterseite kommt dem am naechsten und braucht kein HACS.
+
+Unter der Karte sitzt **eine** Kachel fuer Standort und Anschrift: sie zeigt
+die Adresse und loest beim Antippen eine neue Abfrage aus. Der Zeitpunkt des
+letzten Drucks interessiert niemanden, die Adresse schon.
+
+Vier Karten erscheinen nur bei Bedarf: der QR-Code bei offener Anmeldeseite,
+die Drosselungswarnung bei Hitze, die Messung der Basisstationen bei mehreren
+Funden, und der Hinweis **Kein GPS-Empfang** unter der Karte.
+
+> **Zu den Zeiger-Anzeigen.** Fruehere Fassungen zeigten Signal, Tempo und
+> SINR als runde Zeiger. Die sehen gut aus, brauchen aber die dreifache Hoehe
+> einer Kachel — auf einem Bedienpanel im Fahrzeug bedeutet das Scrollen. Sie
+> wurden durch Kacheln ersetzt; die Farbabstufung nach Qualitaet entfaellt
+> dabei.
+
+> **Die Feinjustierung steht nicht mehr im Dashboard.** Bandbreite,
+> Realismusfaktor und Wechselschwelle wirken unveraendert, sind aber nur noch
+> unter *Einstellungen → Geraete & Dienste → Hilfselemente* erreichbar. Wer
+> sie nie anfasst, soll sie auch nicht sehen.
 
 > **Zwei Dinge zum Mitnehmen.** Dein vorhandenes Dashboard wird dabei nicht
 > angefasst — die Seite ist ein eigener Eintrag. Dafür lässt sie sich **nicht
@@ -517,7 +656,38 @@ Tailscale verteilt sie nicht — der häufigste Stolperstein.
 Danach erreichst du Home Assistant unter seiner Tailscale-Adresse und über die
 Subnetz-Route auch den Router selbst per SSH.
 
-<div class="pagebreak"></div>
+
+### 7.4 Standort und Anschrift
+
+Die Position geht als Attribut an einen `device_tracker`. Dadurch erscheint das
+Fahrzeug auf der Karte, ohne dass die Koordinaten als Zustand in jeder
+Verlaufsansicht auftauchen — eine bewusste Entscheidung gegen eine
+minuetliche Bewegungsspur in der Datenbank.
+
+Zusaetzlich loest der Agent die Koordinaten in eine Anschrift auf und zeigt sie
+in der Kachel unter der Karte:
+
+```
+Pariser Platz 2, 10117 Berlin
+Alpseestrasse, 87645 Schwangau        (ohne Hausnummer)
+Piazza San Marco, 30124 Venezia (IT)  (Ausland mit Laenderkuerzel)
+```
+
+Dafuer wird der Adressdienst **Nominatim** von OpenStreetMap befragt:
+kostenlos, ohne Anmeldung, aber mit Nutzungsregeln. Hat sich das Fahrzeug
+weniger als 50 Meter bewegt, nimmt der Agent die gespeicherte Antwort — bei
+einem stehenden Wohnmobil ist das der Normalfall, und die erlaubte Abfragerate
+wird dadurch um Groessenordnungen unterschritten.
+
+> **Das sollte man wissen:** Bei jeder Standortmeldung verlassen die
+> Koordinaten das Fahrzeug und gehen an einen fremden Dienst. Wem das nicht
+> recht ist, entfernt den Aufruf von `_adresse_zu()` in `publish_position()` —
+> Pin und Karte funktionieren unveraendert weiter, nur die Kachel bleibt leer.
+
+Ohne GPS-Fix wird gar nichts gemeldet, auch keine veraltete Position. Lieber
+keine Angabe als eine falsche. Siehe Kapitel 4.6, wenn dauerhaft nichts kommt.
+
+---
 
 ## 8. Tablet im Fahrzeug
 
@@ -622,17 +792,26 @@ Quellen für Silk erlauben.
 > ein Wischen in eine Bildschirmecke plus PIN aus der App heraus. Vergib
 > vorher eine PIN, die du dir merkst.
 
-**Oberfläche von Home Assistant ausblenden.** Fully Kiosk kann eigenes CSS
-einspritzen. Unter *Advanced Web Settings → Custom CSS Code*:
+**Zur Kopfzeile von Home Assistant.** In vielen Anleitungen steht, man koenne
+sie per *Custom CSS* in Fully Kiosk ausblenden. **Das funktioniert nicht**, und
+zwar aus einem grundsaetzlichen Grund: die Oberflaeche von Home Assistant
+besteht aus Web-Komponenten, deren Innenleben in abgeschotteten Bereichen
+(Shadow DOM) liegt. Von aussen eingespritztes CSS erreicht `app-header` oder
+`ha-menu-button` dort nicht — die Regel wird uebernommen und bleibt wirkungslos.
+In neueren Fully-Fassungen fehlt das Eingabefeld ohnehin.
 
-```css
-/* Seitenleiste und Kopfzeile verbergen -- reine Anzeige */
-.header, app-header, ha-menu-button { display: none !important; }
-app-drawer { display: none !important; }
-#view { padding-top: 0 !important; }
-```
+Zwei brauchbare Wege:
 
-Damit bleibt die Dashboard-Fläche, ohne Navigation. Kein HACS nötig.
+**Kopfzeile stehen lassen.** Sie kostet rund 50 Pixel. Das Bedienpanel ist auf
+grosse Flaechen ausgelegt und verliert dadurch nichts. Als Nebeneffekt bleibt
+ein Menuesymbol, ueber das sich die vollstaendige Internet-Seite erreichen
+laesst, ohne den Kiosk zu verlassen. Fuer die meisten Fahrzeuge reicht das.
+
+**`kiosk-mode` ueber HACS nachruesten.** Diese Erweiterung laeuft innerhalb der
+Oberflaeche und kommt deshalb an die Stellen heran, an denen CSS scheitert. Sie
+blendet Kopfzeile und Seitenleiste wahlweise pro Dashboard oder pro Benutzer
+aus. Dafuer sind HACS, eine Installation und ein Neustart noetig — ein eigener
+Arbeitsschritt, kein Nebenbei.
 
 ### 8.4 Anmeldung ohne Passwort
 
@@ -1111,6 +1290,60 @@ Accesspoint guten Funk und schlechtes Internet hatte. Die Lösung steckte
 ironischerweise in genau dem, was in Schritt 2 entfernt worden war — die
 feste Bindung an eine Basisstation. Jetzt wird sie gemessen statt geraten.
 
+### Schritt 8 — Der erste Tag im Echtbetrieb
+
+Der Tag, an dem alles zusammenkam, und der die meisten Fehler zutage foerderte
+— nicht trotz, sondern wegen des echten Betriebs.
+
+Sechs Funde an einem Nachmittag: ein zu schwaches Netzteil, das den Pi gar
+nicht erst starten liess; Add-on-Optionen, die beim Aktualisieren leer bleiben;
+ein Vorlagensensor, der einen Text statt einer Zahl lieferte; ein 5-GHz-Kanal,
+den europaeische Geraete nicht sehen duerfen; abgeschaltetes GPS; und die
+doppelte Quotierung, die jeden Netznamen unbrauchbar machte.
+
+Alle sechs stehen in Kapitel 15, mit Symptom, Ursache und Nachweis. Keiner
+davon war ein Programmierfehler im engeren Sinn — es waren Annahmen, die im
+Trockenen stimmten und in der Wirklichkeit nicht.
+
+Gleichzeitig hat der Kern gehalten: als der WLAN-Uplink waehrend der Arbeit
+wegbrach, uebernahm die eSIM und trug fast sechs Stunden lang den gesamten
+Verkehr, ohne dass jemand eingreifen musste. Genau dafuer wurde das System
+gebaut, und es hat sich bewaehrt, bevor die erste Reise begann.
+
+Dazu kamen die Bequemlichkeiten, die erst im Gebrauch auffallen: Knoepfe, die
+sofort ausloesen statt ein Fenster zu oeffnen; eine Anschrift unter der Karte
+statt nackter Koordinaten; ein Abschalt-Knopf mit PIN, damit niemand das
+System im Vorbeiwischen ausknipst.
+
+### Schritt 9 — Die Oberflaeche wird benutzbar
+
+Der Tag nach der Inbetriebnahme, und der erste, an dem nicht mehr die Technik
+im Weg stand, sondern die Bedienung. Alle Aenderungen kamen aus dem Gebrauch,
+keine aus einer Planung:
+
+Knoepfe oeffneten beim Antippen ein Fenster, statt zu tun, was draufsteht —
+`tap_action: perform-action` behebt das, und der Scan-Knopf, der angeblich
+defekt war, funktionierte danach auf Anhieb: wer das Fenster schloss, ohne auf
+*Druecken* zu tippen, hatte nie einen Befehl geschickt.
+
+Zwei gefaehrliche Knoepfe bekamen eine PIN. Erst mit Bestaetigungshaken und
+Textfeld, dann als Ziffernblock im Dashboard, schliesslich als kompaktes
+Fenster mit einem einzigen Zahlenfeld. Drei Anlaeufe fuer eine Sache, die man
+nicht vorher entscheiden kann — man muss sie am Geraet in der Hand halten.
+
+Kacheln waren doppelt so hoch wie noetig (`vertical: true`), Zeiger-Anzeigen
+brauchten die dreifache Hoehe einer Kachel, und Abschnitte richteten sich an
+der hoechsten Spalte aus statt Luecken zu fuellen. Zusammen bedeutete das auf
+einem 10-Zoll-Tablet im Querformat dauerndes Scrollen.
+
+Und der Uplink stand als Wort da — `wifi` oder `mobile` —, wo ein Symbol
+gereicht haette. Jetzt traegt die Farbe die Information, nicht der Text.
+
+Der groesste Einzelgewinn war nichts davon, sondern eine Einsicht ueber
+Reihenfolge: was man staendig ansieht, gehoert nach oben; was man nur auf
+einem Campingplatz braucht, auf eine Unterseite. Danach passte alles ohne
+Scrollen auf den Bildschirm.
+
 ---
 
 ## 15. Gefundene Fehler
@@ -1197,7 +1430,7 @@ konfigurierten Wert nur als Startpunkt.
 
 ### Lokale Apps: Quelle ist der Ordner, nicht das Repository
 
-Zunächst schien HA OS 18.3 das Verzeichnis `/addons` nicht mehr einzulesen:
+Zunächst schien HA OS 17.3 das Verzeichnis `/addons` nicht mehr einzulesen:
 Weder die App noch ein minimales Wegwerf-Beispiel tauchten auf, und im
 Startprotokoll des Supervisors fehlte jede Zeile dazu. Nach dem Einbinden als
 Git-Repository erschien sie.
@@ -1209,6 +1442,244 @@ wurde.
 
 Für Änderungen zählt deshalb der Ordner. Das Repository bleibt als Sicherung
 und für die Installation auf weiteren Geräten sinnvoll.
+
+### Link vorhanden, aber kein einziges Paket — ein 1-A-Netzteil
+
+Nach dem Wiederaufbau zu Hause war der Pi nicht erreichbar. Die Suche lief
+der Reihe nach: Mac im richtigen Netz (`192.168.1.194`, Router `.1`) ✓, Pi
+nicht im DHCP-Lease, auch nicht im Hausnetz hinter der Fritz!Box, kein Dienst
+auf Port 8123 oder 4357 bei keinem der 16 dort gefundenen Geräte.
+
+Entschieden hat es der Blick auf die Bridge:
+
+```
+lan2@eth0  UP  <BROADCAST,MULTICAST,UP,LOWER_UP>   # Kabel hat Kontakt
+6: lan2@eth0: ... state forwarding cost 5          # Port leitet weiter
+
+=== MAC-Tabelle br-lan ===
+aa:bb:cc:dd:ee:ff dev wlan1-2 ...                  # nur der Mac über WLAN
+                                                   # kein Eintrag für lan2
+```
+
+`LOWER_UP` bei leerer MAC-Tabelle ist eine eindeutige Signatur: die Buchse ist
+elektrisch belegt, aber das Gerät dahinter hat **kein einziges Paket**
+gesendet. Ein laufendes Home Assistant ist nie still. Also lief es nicht.
+
+Ursache war das Netzteil — 1 A. Der Pi 4B mit Lüfter zieht beim Start über
+1,2 A, die Spannung bricht ein, der Startvorgang kommt nicht durch. Der
+Ethernet-Baustein bekommt trotzdem Strom und verhandelt die Verbindung; von
+außen sieht das aus wie ein Netzwerkproblem und führt eine halbe Stunde in
+die falsche Richtung.
+
+Zwei Lehren daraus, beide in Kapitel 2 aufgenommen: **5,1 V / 3 A sind
+Pflicht**, und im Fahrzeug muss der Wandler die 3 A auch beim Anlassen des
+Motors halten — ein Spannungseinbruch dort erzeugt dasselbe Bild, nur
+unterwegs und ohne Terminal. Wer das Muster kennt, spart sich die Suche:
+*Link ja, MAC-Tabelle leer* heißt Strom oder Startmedium, nie Netzwerk.
+
+Beiläufig fiel dabei auf, dass der Pi seine Adresse über DHCP bezieht und
+nach jedem Neustart eine andere bekommen kann. Eine feste Reservierung auf
+seine MAC-Adresse im Router gehört zur Einrichtung — siehe Kapitel 5.
+
+### Die SSID bekam Anfuehrungszeichen verpasst — doppelte Quotierung
+
+Der folgenschwerste Fehler des Projekts, und er wurde nur durch Zufall sichtbar.
+Nach einem Verbindungsversuch ueber das WLAN-Dropdown stand im Router:
+
+```
+wireless.1.ssid=<Netzname mit Apostrophen drumherum>   # der Client
+wireless.default_radio1.ssid='Fahrzeug-WLAN'            # der Accesspoint
+```
+
+Die zweite Zeile ist sauber. In der ersten steckte der Netzname **mit
+Apostrophen als echten Zeichen** im Wert: der Router suchte ein WLAN, dessen
+Name mit einem Apostroph beginnt, und fand natuerlich keines. Nach aussen sah
+das aus wie ein falsches Passwort — die Fehlersuche lief eine halbe Stunde in
+die Irre.
+
+Die Ursache waren zwei Ebenen, die sich gegenseitig schuetzten:
+
+```python
+# in connect_wifi
+f"wireless.{section}.ssid": shlex.quote(ssid)     # quotiert den Wert
+
+# in uci_set
+f"uci set {shlex.quote(f'{k}={v}')}"              # quotiert das Ganze erneut
+```
+
+Die erste Quotierung schuetzt vor der Shell, die zweite schuetzt die erste —
+und damit landen die Anfuehrungszeichen im Wert statt um ihn herum. **Regel
+daraus: quotiert wird genau einmal, naemlich dort, wo der Befehl
+zusammengesetzt wird.** Wer eine Ebene tiefer schon quotiert, verdirbt das
+Ergebnis.
+
+Behoben, indem `connect_wifi` Rohwerte uebergibt. Geprueft gegen fuenf Faelle,
+darunter ein Netzname mit Apostroph und einer mit Anfuehrungszeichen — alle
+kommen jetzt unveraendert an.
+
+**Warum das so wichtig ist:** Zuhause gibt es eine Rueckfallebene. Auf einem
+Campingplatz haette das WLAN-Dropdown schlicht nie funktioniert, ohne jede
+Fehlermeldung, die auf die Ursache zeigt.
+
+### Fully Kiosk benennt seine Entitaeten anders als erwartet
+
+Die Integration leitet die Entitaetsnamen vom **Geraetenamen** ab, den man in
+Fully Kiosk vergibt — nicht von einem Wunschnamen in der Konfiguration.
+
+Gravierender ist der zweite Unterschied: **der Bildschirm ist ein `switch`,
+kein `light`.** Ein `light.turn_on` auf eine Schalter-Entitaet schlaegt fehl.
+Die Helligkeit sitzt in einer eigenen `number`-Entitaet mit Wertebereich
+0 bis 255, nicht in Prozent.
+
+| erwartet | tatsaechlich |
+|---|---|
+| `sensor.van_tablet_battery` | `sensor.fire_tablet_batterie` |
+| `light.van_tablet_screen` | `switch.fire_tablet_bildschirm` |
+| `brightness_pct: 15` | `number.fire_tablet_bildschirmhelligkeit: 38` |
+
+Deshalb steht in Kapitel 8 ein eigener Schritt dafuer. Wer ihn ueberspringt,
+hat Automationen, die ins Leere laufen — ohne Fehlermeldung.
+
+### GPS war ab Werk abgeschaltet
+
+```
+gps.gpsd.enabled='0'
+/etc/init.d/gpsd status  ->  active with no instances
+gpsctl -i                ->  Unable to retrieve valid gpsd response: Not found
+```
+
+Das liest sich wie "kein Empfang", ist aber etwas anderes: der Dienst laeuft
+ohne Instanz, weil er nie eingeschaltet wurde. Bei fehlendem Fix antwortet
+gpsd und liefert nur keine Koordinaten.
+
+Die Folge reicht weit ueber die Karte hinaus. **Ohne GPS gibt es keine
+Standzeit-Erkennung**, und ohne die loest die automatische WLAN-Suche nie aus:
+der Knopf im Dashboard funktioniert, die Automatik schweigt. Man sucht den
+Fehler dann beim Scannen statt beim Standort. Siehe Kapitel 4.6.
+
+### Knopf-Kacheln oeffneten ein Fenster statt auszuloesen
+
+Eine `tile`-Karte mit einer `button`-Entitaet oeffnet beim Antippen die
+Detailansicht; erst ein zweiter Druck loest aus. Auf einem Bedienpanel im
+Fahrzeug ist das unbrauchbar. Abhilfe:
+
+```yaml
+tap_action:
+  action: perform-action
+  perform_action: button.press
+  target:
+    entity_id: button.van_netzwerk_standort_jetzt_abfragen
+```
+
+Das gilt fuer alle Knoepfe — mit einer bewussten Ausnahme: der Router-Neustart
+behaelt seine Rueckfrage. Eine Kachel, die zwei Minuten lang jede Verbindung
+kappt, darf man nicht im Vorbeiwischen treffen.
+
+Nebenwirkung des alten Verhaltens: Wer das Fenster schloss, ohne auf
+*Druecken* zu tippen, schickte nie einen Befehl — und im Protokoll des Agenten
+stand folgerichtig nichts. Das sah aus wie ein defekter Knopf.
+
+### Das eigene Netz war fuer das Tablet unsichtbar — Kanal 149
+
+Beim Einrichten des Bedienpanels fand das Amazon-Tablet das Fahrzeug-WLAN
+nicht, obwohl Mac und Telefon problemlos verbunden waren. Die Abfrage:
+
+```
+wireless.radio1.channel='auto'
+wireless.radio1.channels='36-165'
+wireless.radio1.country='DE'
+Mode: Master  Channel: 149 (5.745 GHz)  HT Mode: HE80
+```
+
+Die automatische Kanalwahl hatte **149** gewaehlt. Dieser Kanal liegt im
+Bereich UNII-3 (149–165), der in Europa fuer WLAN nicht freigegeben ist — die
+Laendereinstellung `DE` hat das nicht verhindert, weil der Router den Bereich
+nicht ausschliesst.
+
+Entscheidend ist, dass sich Geraete unterschiedlich verhalten: die meisten
+folgen dem, was der Accesspoint ankuendigt, und verbinden sich. Andere —
+Amazon-Tablets, viele Android-Geraete mit strenger Zertifizierung — blenden
+solche Netze **ohne Hinweis** aus. Man sucht dann am Geraet statt am Router.
+
+Fest gesetzt auf Kanal 36 und die Auswahl begrenzt, damit "auto" nicht beim
+naechsten Neustart wieder nach oben wandert:
+
+```sh
+uci set wireless.radio1.channel='36'
+uci set wireless.radio1.channels='36-48'
+uci commit wireless; wifi reload
+```
+
+Warum nicht 52 bis 140: diese Kanaele sind in Europa zwar erlaubt, verlangen
+aber eine Radarerkennung. Der Accesspoint muss vor dem Senden eine Minute
+beobachten und bei Radarverdacht sofort wechseln. In einem Fahrzeug, das
+taeglich neu startet und staendig den Standort wechselt, heisst das eine
+Minute Funkstille nach jedem Einschalten. Die Kanaele 36 bis 48 sind frei
+davon und europaweit nutzbar.
+
+**Pruefe das vor der ersten Reise**, auch wenn alle deine Geraete verbunden
+sind — ein neues Geraet unterwegs faellt sonst aus, und die Ursache ist von
+aussen nicht zu erkennen.
+
+### Neue Add-on-Optionen sind in bestehenden Installationen leer
+
+Beim Sprung von 1.1.0 auf 1.5.0 stuerzte der Hauptloop in Sekundentakt ab:
+
+```
+TypeError: '<' not supported between instances of 'float' and 'NoneType'
+```
+
+Die Ursache ist allgemein und betrifft jedes Add-on, das Optionen nachruestet.
+`bashio::config 'schluessel'` liefert fuer einen Schluessel, der in den
+**gespeicherten** Optionen fehlt, das Wort `null`. Beim Aktualisieren behaelt
+Home Assistant die alten Optionen des Benutzers; die neu hinzugekommenen
+Schluessel existieren dort nicht. In der erzeugten Konfiguration steht dann
+YAML-Null, und in Python kommt `None` an.
+
+Der Fallstrick liegt eine Ebene tiefer: `dict.get(key, default)` rettet davor
+**nicht**. Der Vorgabewert greift nur, wenn der Schluessel fehlt — hier ist er
+vorhanden und sein Wert ist None.
+
+Zwei Auspraegungen, die sich stark unterscheiden:
+
+| Typ | Verhalten | Auffindbarkeit |
+|---|---|---|
+| Zahl | Absturz beim ersten Vergleich | sofort, mit Traceback |
+| Ja/Nein | `None` ist falsch — die Funktion schaltet sich ab | **gar nicht** |
+
+Die zweite Zeile ist die gefaehrliche. `auto_connect` als Null haette die
+automatische WLAN-Suche lautlos stillgelegt: kein Absturz, keine Meldung,
+keine Spur im Protokoll. Aufgefallen waere das erst auf dem Campingplatz.
+
+Behoben auf drei Ebenen: `run.sh` gibt jedem Options-Zugriff den Vorgabewert
+mit, `agent.py` holt Zahlen ueber `_num()` und Ja/Nein-Werte ueber `_flag()`,
+und beide behandeln `None` wie einen fehlenden Schluessel. Wer nur die
+Oberflaeche nutzt, kommt mit einem Druck auf **Speichern** in der
+Add-on-Konfiguration ans selbe Ziel — das schreibt alle Vorgaben hinein.
+
+### Ein Zahlensensor darf nicht "unknown" sagen
+
+Im Protokoll von Home Assistant, bei jedem Zyklus:
+
+```
+Received invalid sensor state: unknown for entity
+sensor.mobilfunk_geschaetzter_durchsatz, expected a number
+```
+
+Die Vorlage gab bei fehlendem SINR den **Text** `unknown` zurueck. Das ist fuer
+einen Sensor mit Einheit und `state_class: measurement` ungueltig. Richtig ist
+ein `availability:`-Ausdruck: faellt er auf falsch, meldet sich die Entitaet als
+nicht verfuegbar und die Kachel zeigt einen Strich, statt dass im Protokoll
+eine Fehlerzeile pro Durchlauf auflaeuft.
+
+```yaml
+availability: >
+  {% set sinr = states(states('input_text.van_teltonika_sinr_entity')) | float(-99) %}
+  {{ -20 <= sinr <= 50 }}
+```
+
+Allgemein: ein Zustand, der keine Zahl ist, gehoert nicht in den Zustand,
+sondern in die Verfuegbarkeit.
 
 ### Verworfene Verdachtsmomente
 

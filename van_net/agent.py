@@ -64,6 +64,38 @@ MODE_TO_INTERNAL = {
 }
 
 
+
+def _num(mapping, key, default):
+    """Zahl aus der Konfiguration, robust gegen fehlende und leere Werte.
+
+    Ein in den Add-on-Optionen nicht gesetzter Schluessel kommt als YAML-Null
+    an. `dict.get(key, default)` greift dann NICHT, weil der Schluessel ja
+    existiert -- der Wert ist nur None. Das hat den Hauptloop zum Absturz
+    gebracht (TypeError: '<' not supported between 'float' and 'NoneType').
+    """
+    value = mapping.get(key)
+    if value is None:
+        return default
+    try:
+        return type(default)(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _flag(mapping, key, default):
+    """Ja/Nein-Wert aus der Konfiguration, robust gegen fehlende und leere Werte.
+
+    Gefaehrlicher als die Zahlenvariante: ein None ist in Python schlicht
+    falsch. `auto_connect` als YAML-Null haette die automatische Verbindung
+    lautlos abgeschaltet -- ohne Absturz, ohne Meldung, ohne Spur im Protokoll.
+    """
+    value = mapping.get(key)
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "on", "1")
+    return bool(value)
+
 class Agent:
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -73,7 +105,7 @@ class Agent:
             username=r.get("username", "root"),
             key_file=r.get("ssh_key"),
             password=r.get("password"),
-            port=r.get("port", 22),
+            port=_num(r, "port", 22),
         )
 
         w = cfg["wifi"]
@@ -82,23 +114,23 @@ class Agent:
         self.mobile_iface = cfg["mobile"]["wan_interface"]  # z.B. mob1s1a1
         self.known = {n["ssid"]: n.get("password") for n in w.get("known_networks", [])}
         self.blocklist = set(w.get("blocked_ssids", []))
-        self.min_signal = w.get("min_signal_dbm", -78)
-        self.allow_open = w.get("auto_connect_open", True)
+        self.min_signal = _num(w, "min_signal_dbm", -78)
+        self.allow_open = _flag(w, "auto_connect_open", True)
 
         m = cfg["movement"]
-        self.stationary_kmh = m.get("stationary_below_kmh", 3.0)
-        self.stationary_after = m.get("stationary_after_seconds", 180)
+        self.stationary_kmh = _num(m, "stationary_below_kmh", 3.0)
+        self.stationary_after = _num(m, "stationary_after_seconds", 180)
 
         p = cfg["portal"]
         self.portal = PortalAutomation(
             screenshot_dir=p.get("screenshot_dir", "/share/van-net/screenshots"),
-            max_rounds=p.get("max_rounds", 3),
+            max_rounds=_num(p, "max_rounds", 3),
         )
         self.qr_path = p.get("qr_path", "/share/van-net/www/portal_qr.png")
         self.qr_public = p.get("qr_public_path", "/local/van-net/portal_qr.png")
 
-        self.poll_interval = cfg.get("poll_interval_seconds", 20)
-        self.scan_cooldown = cfg["wifi"].get("scan_cooldown_seconds", 300)
+        self.poll_interval = _num(cfg, "poll_interval_seconds", 20)
+        self.scan_cooldown = _num(cfg["wifi"], "scan_cooldown_seconds", 300)
 
         # Laufzeitzustand
         self.state = {
@@ -152,7 +184,7 @@ class Agent:
         # die Position aber nur alle 30 Minuten nach HA geschickt. Das haelt
         # die Datenbank klein und erzeugt keine Bewegungsspur im Minutentakt.
         g = cfg.get("gps", {}) or {}
-        self.position_interval = g.get("publish_interval_seconds", 1800)
+        self.position_interval = _num(g, "publish_interval_seconds", 1800)
         self._last_position_ts = 0.0
         self._last_position = None
 
@@ -221,7 +253,7 @@ class Agent:
         client.will_set(f"{NODE}/availability", "offline", retain=True)
         client.on_connect = self._on_connect
         client.on_message = self._on_message
-        client.connect(mcfg["host"], mcfg.get("port", 1883), keepalive=60)
+        client.connect(mcfg["host"], _num(mcfg, "port", 1883), keepalive=60)
         client.loop_start()
         return client
 
@@ -365,6 +397,7 @@ class Agent:
             ("wifi_signal", "WLAN-Signal", "mdi:wifi-strength-3", "dBm", "signal_strength"),
             ("wifi_speed_mbps", "WLAN-Geschwindigkeit", "mdi:speedometer", "Mbit/s", None),
             ("speed_kmh", "Fahrzeuggeschwindigkeit", "mdi:car-speed-limiter", "km/h", None),
+            ("gps_sats", "GPS-Satelliten", "mdi:satellite-variant", None, None),
             ("rsrp", "Mobilfunk RSRP", "mdi:signal-cellular-outline", "dBm", "signal_strength"),
             ("rsrq", "Mobilfunk RSRQ", "mdi:signal-cellular-outline", "dB", None),
             ("sinr", "Mobilfunk SINR", "mdi:signal-variant", "dB", None),
@@ -398,6 +431,7 @@ class Agent:
         for oid, name, icon, devclass in [
             ("internet_ok", "Internet verfuegbar", "mdi:web-check", "connectivity"),
             ("stationary", "Fahrzeug steht", "mdi:parking", None),
+            ("gps_fix", "GPS-Empfang", "mdi:crosshairs-gps", None),
             ("throttling", "Modem drosselt", "mdi:speedometer-slow", "problem"),
         ]:
             payload = {
@@ -490,7 +524,7 @@ class Agent:
             if gps:
                 self.state["speed_kmh"] = gps.get("speed_kmh")
                 self.state["gps_fix"] = bool(gps.get("fix"))
-                self._update_stationary(gps.get("speed_kmh", 0.0))
+                self._update_stationary(_num(gps, "speed_kmh", 0.0))
             else:
                 self.state["gps_fix"] = False
 
@@ -921,6 +955,66 @@ class Agent:
 
     # ---------------------------------------------------------- Standort
 
+    # ------------------------------------------------ Adresse zur Position
+
+    # Nominatim ist der Adressdienst von OpenStreetMap: kostenlos, ohne
+    # Schluessel, aber mit Nutzungsregeln -- hoechstens eine Anfrage pro
+    # Sekunde und ein aussagekraeftiger User-Agent. Bei einer Abfrage alle
+    # 30 Minuten liegen wir weit darunter. Die Adresse ist Beiwerk: schlaegt
+    # sie fehl, wird die Position trotzdem gemeldet.
+    GEOCODE_URL = "https://nominatim.openstreetmap.org/reverse"
+    GEOCODE_AGENT = "van-net-addon (https://github.com/BackonStyle/van-net-addon)"
+
+    @staticmethod
+    def _meter_zwischen(a_lat, a_lon, b_lat, b_lon) -> float:
+        """Grobe Entfernung in Metern -- reicht, um Wiederholungen zu sparen."""
+        import math
+        dlat = (a_lat - b_lat) * 111_320.0
+        dlon = (a_lon - b_lon) * 111_320.0 * math.cos(math.radians((a_lat + b_lat) / 2))
+        return math.hypot(dlat, dlon)
+
+    def _adresse_zu(self, lat: float, lon: float) -> str:
+        """Strasse mit Hausnummer, Postleitzahl und Ort -- oder leer."""
+        letzte = getattr(self, "_geo_cache", None)
+        if letzte and self._meter_zwischen(lat, lon, letzte[0], letzte[1]) < 50:
+            return letzte[2]          # weniger als 50 m bewegt, alte Antwort
+
+        import urllib.parse, urllib.request
+        frage = urllib.parse.urlencode({
+            "lat": f"{lat:.6f}", "lon": f"{lon:.6f}",
+            "format": "jsonv2", "zoom": 18,
+            "addressdetails": 1, "accept-language": "de",
+        })
+        try:
+            req = urllib.request.Request(
+                f"{self.GEOCODE_URL}?{frage}",
+                headers={"User-Agent": self.GEOCODE_AGENT})
+            with urllib.request.urlopen(req, timeout=8) as antwort:
+                daten = json.loads(antwort.read().decode("utf-8"))
+        except Exception as exc:                    # Netz weg, Dienst down, …
+            log.debug("Adresssuche fehlgeschlagen: %s", exc)
+            return letzte[2] if letzte else ""
+
+        a = daten.get("address") or {}
+        strasse = a.get("road") or a.get("pedestrian") or a.get("footway") or ""
+        nummer = a.get("house_number") or ""
+        ort = (a.get("city") or a.get("town") or a.get("village")
+               or a.get("municipality") or a.get("county") or "")
+        plz = a.get("postcode") or ""
+        land = a.get("country_code", "").upper()
+
+        zeile1 = f"{strasse} {nummer}".strip()
+        zeile2 = f"{plz} {ort}".strip()
+        teile = [t for t in (zeile1, zeile2) if t]
+        # Auf dem Feldweg gibt es keine Strasse -- dann nimmt der Dienst
+        # selbst eine brauchbare Beschreibung, besser als gar nichts.
+        text = ", ".join(teile) or (daten.get("display_name") or "")[:120]
+        if land and land != "DE" and text:
+            text = f"{text} ({land})"
+
+        self._geo_cache = (lat, lon, text)
+        return text
+
     def publish_position(self, forced: bool = False) -> bool:
         """
         Position nach Home Assistant melden.
@@ -955,6 +1049,8 @@ class Agent:
         self.state["gps_sats"] = gps.get("sats")
         self.state["position_age"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
+        adresse = self._adresse_zu(gps["lat"], gps["lon"])
+
         self.mqtt.publish(f"{NODE}/position", json.dumps({
             "latitude": gps["lat"],
             "longitude": gps["lon"],
@@ -962,6 +1058,7 @@ class Agent:
             "source_type": "gps",
             "satelliten": gps.get("sats"),
             "zuletzt": self.state["position_age"],
+            "adresse": adresse,
         }), retain=True)
 
         log.info("Position gemeldet (%d Satelliten)%s",
@@ -1215,7 +1312,7 @@ class Agent:
                 # Standort -- prueft selbst, ob das Intervall um ist
                 self.publish_position()
 
-                autoscan = self.cfg["wifi"].get("auto_connect", True)
+                autoscan = _flag(self.cfg["wifi"], "auto_connect", True)
                 needs_wifi = self.state["active_wan"] != "wifi" or not self.state["internet_ok"]
                 if (autoscan and needs_wifi and self.state["stationary"]
                         and self.state["wan_mode"] != "SIM erzwingen"

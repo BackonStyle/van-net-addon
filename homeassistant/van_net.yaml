@@ -110,13 +110,22 @@ template:
         unit_of_measurement: "Mbit/s"
         state_class: measurement
         icon: mdi:signal-cellular-3
+        # Ohne gueltigen SINR gibt es keine sinnvolle Schaetzung. Ein
+        # Zahlensensor darf dann NICHT den Text "unknown" liefern -- Home
+        # Assistant quittiert das bei jedem Zyklus mit
+        #   "Received invalid sensor state: unknown ... expected a number".
+        # Richtig ist, den Sensor ueber 'availability' als nicht verfuegbar
+        # zu melden; die Kachel zeigt dann sauber einen Strich.
+        availability: >
+          {% set sinr = states(states('input_text.van_teltonika_sinr_entity')) | float(-99) %}
+          {{ -20 <= sinr <= 50 }}
         state: >
           {% set sinr_e = states('input_text.van_teltonika_sinr_entity') %}
           {% set rsrp_e = states('input_text.van_teltonika_rsrp_entity') %}
           {% set sinr = states(sinr_e) | float(-99) %}
           {% set rsrp = states(rsrp_e) | float(-140) %}
           {% if sinr < -20 or sinr > 50 %}
-            unknown
+            0
           {% else %}
             {% set bw = states('input_number.van_assumed_bandwidth') | float(60) %}
             {% set load = states('input_number.van_cell_load_factor') | float(0.45) %}
@@ -134,6 +143,16 @@ template:
           grundlage: >
             SINR {{ states(states('input_text.van_teltonika_sinr_entity')) }} dB,
             RSRP {{ states(states('input_text.van_teltonika_rsrp_entity')) }} dBm
+
+      # Die Anschrift kommt als Attribut am device_tracker an. Als eigener
+      # Sensor laesst sie sich in Kacheln und Benachrichtigungen verwenden,
+      # ohne jedes Mal state_attr() zu schreiben.
+      - name: "Van Adresse"
+        unique_id: van_address
+        icon: mdi:map-marker
+        state: >
+          {{ state_attr('device_tracker.van_standort', 'adresse')
+             or 'noch keine Position' }}
 
       - name: "Uplink Empfehlung"
         unique_id: van_uplink_recommendation
@@ -378,54 +397,69 @@ automation:
   #
   # Dauerladung bei 100 % plus Hitze im Fahrzeug laesst Lithiumzellen
   # aufquellen. Rund 50 % ist der beste Ladestand fuer lange Standzeiten.
-  - id: van_tablet_charge_band
-    alias: "Tablet: Ladung im Schonbereich halten"
-    mode: single
-    triggers:
-      - trigger: state
-        entity_id: sensor.van_tablet_battery
-      - trigger: zone
-        entity_id: device_tracker.van_standort
-        zone: zone.home
-        event: enter
-      - trigger: zone
-        entity_id: device_tracker.van_standort
-        zone: zone.home
-        event: leave
-    variables:
-      zuhause: "{{ is_state('device_tracker.van_standort', 'home') }}"
-      untere: "{{ 35 if zuhause else 25 }}"
-      obere: "{{ 50 if zuhause else 80 }}"
-      stand: "{{ states('sensor.van_tablet_battery') | float(-1) }}"
-      laedt: "{{ is_state('switch.tablet_ladung', 'on') }}"
-    conditions:
-      - condition: template
-        value_template: "{{ stand >= 0 }}"
-    actions:
-      - choose:
-          - conditions:
-              - condition: template
-                value_template: "{{ stand < untere and not laedt }}"
-            sequence:
-              - action: switch.turn_on
-                target:
-                  entity_id: switch.tablet_ladung
-          - conditions:
-              - condition: template
-                value_template: "{{ stand > obere and laedt }}"
-            sequence:
-              - action: switch.turn_off
-                target:
-                  entity_id: switch.tablet_ladung
-
-  # --- Tiefschlaf an der Heimatadresse -------------------------------------
-  # Ein echtes Herunterfahren ist auf einem Fire-Tablet ohne Root nicht
-  # moeglich -- Fully Kiosk kennt 'shutdownDevice' nur fuer gerootete
-  # Geraete. forceSleep ist die naechstbeste Stufe: echter Tiefschlaf,
-  # rund 0,1 W statt 0,5 W bei nur dunklem Bildschirm.
+  # ==========================================================================
+  # AUSGESCHALTET -- es fehlt eine schaltbare 12-V-Versorgung fuers Tablet.
   #
-  # Danach ist das Tablet fuer Home Assistant nicht mehr erreichbar.
-  # Aufwecken: Power-Knopf am Geraet. Genau so gewollt.
+  # Zum Einschalten: eine schaltbare Steckdose oder ein Relais fuer die
+  # Tablet-Versorgung in Home Assistant einbinden, unten jedes
+  # `switch.tablet_ladung` durch deren Entitaet ersetzen und die Rautezeichen
+  # am Zeilenanfang entfernen. Danach auch den Hinweis im Tiefschlaf-Block
+  # weiter unten wieder gegen den `choose`-Abschnitt tauschen.
+  #
+  # Warum das lohnt: Dauerladung bei 100 Prozent plus Hitze im Fahrzeug laesst
+  # Lithiumzellen aufquellen. Entscheidend ist nicht die Einschaltdauer,
+  # sondern Ladestand mal Temperatur mal Zeit. Rund 50 Prozent ist das beste
+  # Lagerniveau.
+  # ==========================================================================
+  #- id: van_tablet_charge_band
+  #  alias: "Tablet: Ladung im Schonbereich halten"
+  #  mode: single
+  #  triggers:
+  #    - trigger: state
+  #      entity_id: sensor.fire_tablet_batterie
+  #    - trigger: zone
+  #      entity_id: device_tracker.van_standort
+  #      zone: zone.home
+  #      event: enter
+  #    - trigger: zone
+  #      entity_id: device_tracker.van_standort
+  #      zone: zone.home
+  #      event: leave
+  #  variables:
+  #    zuhause: "{{ is_state('device_tracker.van_standort', 'home') }}"
+  #    untere: "{{ 35 if zuhause else 25 }}"
+  #    obere: "{{ 50 if zuhause else 80 }}"
+  #    stand: "{{ states('sensor.fire_tablet_batterie') | float(-1) }}"
+  #    laedt: "{{ is_state('switch.tablet_ladung', 'on') }}"
+  #  conditions:
+  #    - condition: template
+  #      value_template: "{{ stand >= 0 }}"
+  #  actions:
+  #    - choose:
+  #        - conditions:
+  #            - condition: template
+  #              value_template: "{{ stand < untere and not laedt }}"
+  #          sequence:
+  #            - action: switch.turn_on
+  #              target:
+  #                entity_id: switch.tablet_ladung
+  #        - conditions:
+  #            - condition: template
+  #              value_template: "{{ stand > obere and laedt }}"
+  #          sequence:
+  #            - action: switch.turn_off
+  #              target:
+  #                entity_id: switch.tablet_ladung
+
+  ## --- Tiefschlaf an der Heimatadresse -------------------------------------
+  ## Ein echtes Herunterfahren ist auf einem Fire-Tablet ohne Root nicht
+  ## moeglich -- Fully Kiosk kennt 'shutdownDevice' nur fuer gerootete
+  ## Geraete. forceSleep ist die naechstbeste Stufe: echter Tiefschlaf,
+  ## rund 0,1 W statt 0,5 W bei nur dunklem Bildschirm.
+  ##
+  ## Danach ist das Tablet fuer Home Assistant nicht mehr erreichbar.
+  ## Aufwecken: Power-Knopf am Geraet. Genau so gewollt.
+
   - id: van_tablet_sleep_home
     alias: "Tablet: Tiefschlaf zu Hause"
     mode: single
@@ -439,17 +473,9 @@ automation:
         entity_id: binary_sensor.van_netzwerk_fahrzeug_steht
         state: "on"
     actions:
-      # Erst auf Lagerniveau bringen, dann schlafen legen
-      - choose:
-          - conditions:
-              - condition: numeric_state
-                entity_id: sensor.van_tablet_battery
-                above: 50
-            sequence:
-              - action: switch.turn_off
-                target:
-                  entity_id: switch.tablet_ladung
-      - delay: "00:00:20"
+      # Hinweis: Ohne schaltbare 12-V-Versorgung laesst sich der Ladestand
+      # vorher nicht auf Lagerniveau bringen. Siehe den auskommentierten
+      # Block "Ladung im Schonbereich halten" weiter oben.
       - action: rest_command.tablet_tiefschlaf
         data: {}
 
@@ -471,11 +497,16 @@ automation:
             entity_id: device_tracker.van_standort
             state: "home"
     actions:
-      - action: light.turn_on
+      - action: switch.turn_on
         target:
-          entity_id: light.van_tablet_screen
+          entity_id: switch.fire_tablet_bildschirm
+      # Fully Kiosk fuehrt die Helligkeit als Zahl von 0 bis 255, nicht in
+      # Prozent: 38 entspricht etwa 15 %, 230 etwa 90 %.
+      - action: number.set_value
+        target:
+          entity_id: number.fire_tablet_bildschirmhelligkeit
         data:
-          brightness_pct: "{{ 15 if trigger.id == 'abend' else 90 }}"
+          value: "{{ 38 if trigger.id == 'abend' else 230 }}"
 
   # --- Tablet nicht mehr erreichbar ----------------------------------------
   # Haeufigste Ursachen: Hitzeabschaltung, Akku leer, Fully Kiosk abgestuerzt
@@ -485,7 +516,7 @@ automation:
     mode: single
     triggers:
       - trigger: state
-        entity_id: sensor.van_tablet_battery
+        entity_id: sensor.fire_tablet_batterie
         to: "unavailable"
         for: "00:15:00"
     conditions:
@@ -519,3 +550,113 @@ automation:
           entity_id: select.van_netzwerk_wan_modus
         data:
           option: "Auto"
+
+# ----------------------------------------------------------------------------
+# Raspberry Pi geordnet herunterfahren
+#
+# Das Kabel zu ziehen beschaedigt frueher oder spaeter die Datenbank -- Home
+# Assistant schreibt staendig, und eine SD-Karte verzeiht einen Stromverlust
+# mitten im Schreibvorgang nicht. Deshalb ein Knopf, der es richtig macht.
+#
+# Zwei Huerden, weil die Kachel auf einem Tablet im Fahrzeug sitzt und ein
+# versehentlicher Druck das ganze System abschaltet -- danach hilft nur noch
+# der Griff ans Geraet:
+#   1. ein Haken "wirklich herunterfahren"
+#   2. eine PIN, die in secrets.yaml steht
+#
+# In die secrets.yaml gehoert dafuer eine Zeile:
+#   van_shutdown_pin: "1234"
+# ----------------------------------------------------------------------------
+
+script:
+  # --------------------------------------------------------------------------
+  # Gesicherte Aktionen: beide verlangen dieselbe PIN aus secrets.yaml.
+  #
+  # Die Kachel oeffnet das Entitaets-Fenster des Skripts. Darin steht genau ein
+  # Zahlenfeld -- auf einem Tablet oeffnet das die Zifferntastatur -- und ein
+  # Knopf zum Ausfuehren. Ein schwebendes, frei gestaltetes Popup kann Home
+  # Assistant ohne Zusatzinstallation nicht; dies ist die kompakteste native
+  # Form.
+  #
+  # ACHTUNG: Die PIN wird als Zahl eingegeben. Eine fuehrende Null geht dabei
+  # verloren -- "0123" kommt als 123 an. Deshalb keine PIN mit fuehrender Null.
+  # --------------------------------------------------------------------------
+
+  van_pi_herunterfahren:
+    alias: "Raspberry Pi herunterfahren"
+    icon: mdi:power
+    mode: single
+    variables:
+      erwartete_pin: !secret van_shutdown_pin
+    fields:
+      pin:
+        name: PIN
+        description: Sicherheits-PIN, ohne fuehrende Null
+        required: true
+        selector:
+          number:
+            min: 1
+            max: 99999999
+            mode: box
+    sequence:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >
+                  {{ (pin | int(-1)) == (erwartete_pin | int(-2)) }}
+            sequence:
+              - action: persistent_notification.create
+                data:
+                  title: "System faehrt herunter"
+                  message: >
+                    Warte, bis die gruene LED am Pi dunkel bleibt, bevor du
+                    den Strom trennst.
+                  notification_id: van_sicher
+              - delay: "00:00:03"
+              - action: hassio.host_shutdown
+                data: {}
+        default:
+          - action: persistent_notification.create
+            data:
+              title: "PIN falsch"
+              message: "Es wurde nichts unternommen."
+              notification_id: van_sicher
+
+  van_router_neustart:
+    alias: "Router neu starten"
+    icon: mdi:restart-alert
+    mode: single
+    variables:
+      erwartete_pin: !secret van_shutdown_pin
+    fields:
+      pin:
+        name: PIN
+        description: Sicherheits-PIN, ohne fuehrende Null
+        required: true
+        selector:
+          number:
+            min: 1
+            max: 99999999
+            mode: box
+    sequence:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >
+                  {{ (pin | int(-1)) == (erwartete_pin | int(-2)) }}
+            sequence:
+              - action: persistent_notification.create
+                data:
+                  title: "Router startet neu"
+                  message: >
+                    Fuer etwa zwei Minuten gibt es kein Internet im Fahrzeug.
+                  notification_id: van_sicher
+              - action: button.press
+                target:
+                  entity_id: button.van_netzwerk_router_neu_starten
+        default:
+          - action: persistent_notification.create
+            data:
+              title: "PIN falsch"
+              message: "Es wurde nichts unternommen."
+              notification_id: van_sicher

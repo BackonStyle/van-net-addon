@@ -196,6 +196,30 @@ else
     warn "van_net.yaml nicht im Archiv -- spaeter manuell kopieren"
 fi
 
+# secrets.yaml vorbereiten
+#
+# van_net.yaml verweist mit !secret auf drei Eintraege. Fehlt auch nur einer,
+# startet Home Assistant NICHT, sondern faellt in den abgesicherten Modus --
+# mit einer Fehlermeldung, die auf die Package-Datei zeigt statt auf die
+# fehlende Zeile. Deshalb legen wir Platzhalter an, bevor das Package greift.
+SECRETS="/config/secrets.yaml"
+touch "$SECRETS" 2>/dev/null
+for eintrag in \
+    'tablet_sleep_url|"http://192.168.1.230:2323/?cmd=forceSleep&type=json&password=PLATZHALTER"' \
+    'tablet_screenon_url|"http://192.168.1.230:2323/?cmd=screenOn&type=json&password=PLATZHALTER"' \
+    'van_shutdown_pin|"0000"'
+do
+    name="${eintrag%%|*}"
+    wert="${eintrag#*|}"
+    if grep -q "^${name}:" "$SECRETS" 2>/dev/null; then
+        ok "secrets: ${name} vorhanden"
+    else
+        printf '%s: %s\n' "$name" "$wert" >> "$SECRETS"
+        ok "secrets: ${name} als Platzhalter angelegt"
+    fi
+done
+warn "PIN zum Herunterfahren steht auf 0000 -- in /config/secrets.yaml aendern"
+
 # packages in configuration.yaml aktivieren
 if [ -f "$CFG" ]; then
     if grep -q "include_dir_named packages" "$CFG"; then

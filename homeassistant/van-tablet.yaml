@@ -25,7 +25,13 @@ views:
     path: start
     icon: mdi:home
     type: sections
-    max_columns: 3
+    # Im Querformat passen mehr Spalten nebeneinander -- das ist der
+    # wirksamste Hebel gegen Scrollen.
+    max_columns: 4
+    # Ohne dies richten sich alle Abschnitte an der hoechsten Zeile aus und
+    # lassen darunter Luecken. Dicht gepackt ruecken kurze Abschnitte nach
+    # oben in die Luecken nach.
+    dense_section_placement: true
     dense_section_placement: true
     sections:
 
@@ -38,24 +44,73 @@ views:
             heading_style: title
             icon: mdi:web
 
-          - type: tile
-            entity: sensor.van_netzwerk_aktiver_uplink
-            name: Verbindung
-            icon: mdi:transit-connection-variant
-            vertical: true
-            hide_state: false
+          # Symbol und Farbe statt eines Wortes: auf einem Bildschirm, den man
+          # im Vorbeigehen ansieht, zaehlt der erste Blick.
+          - type: conditional
+            conditions:
+            - condition: state
+              entity: sensor.van_netzwerk_aktiver_uplink
+              state: wifi
+            card:
+              type: tile
+              entity: sensor.van_netzwerk_aktiver_uplink
+              name: WLAN
+              icon: mdi:wifi
+              color: green
 
-          - type: tile
-            entity: sensor.van_netzwerk_verbundenes_wlan
-            name: Netz
-            icon: mdi:wifi
-            vertical: true
+          - type: conditional
+            conditions:
+            - condition: state
+              entity: sensor.van_netzwerk_aktiver_uplink
+              state: mobile
+            card:
+              type: tile
+              entity: sensor.van_netzwerk_aktiver_uplink
+              name: Mobilfunk
+              icon: mdi:signal-cellular-3
+              color: blue
+
+          - type: conditional
+            conditions:
+            - condition: state
+              entity: sensor.van_netzwerk_aktiver_uplink
+              state_not: wifi
+            - condition: state
+              entity: sensor.van_netzwerk_aktiver_uplink
+              state_not: mobile
+            card:
+              type: tile
+              entity: sensor.van_netzwerk_aktiver_uplink
+              name: Kein Internet
+              icon: mdi:network-off
+              color: red
+
+          # Netzname nur, solange das WLAN auch wirklich traegt.
+          - type: conditional
+            conditions:
+            - condition: state
+              entity: sensor.van_netzwerk_aktiver_uplink
+              state: wifi
+            - condition: state
+              entity: sensor.van_netzwerk_verbundenes_wlan
+              state_not: ''
+            - condition: state
+              entity: sensor.van_netzwerk_verbundenes_wlan
+              state_not: unknown
+            - condition: state
+              entity: sensor.van_netzwerk_verbundenes_wlan
+              state_not: unavailable
+            card:
+              type: tile
+              entity: sensor.van_netzwerk_verbundenes_wlan
+              name: Netz
+              icon: mdi:wifi-check
+              color: green
 
           - type: tile
             entity: sensor.van_netzwerk_wlan_geschwindigkeit
             name: Tempo
             icon: mdi:speedometer
-            vertical: true
 
       # ------------------------------------------------ Umschalter
       - type: grid
@@ -92,6 +147,11 @@ views:
 
           - type: tile
             entity: button.van_netzwerk_jetzt_wlan_suchen
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: button.van_netzwerk_jetzt_wlan_suchen
             name: Netze suchen
             icon: mdi:radar
 
@@ -105,6 +165,11 @@ views:
 
           - type: tile
             entity: button.van_netzwerk_mit_ausgewaehltem_wlan_verbinden
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: button.van_netzwerk_mit_ausgewaehltem_wlan_verbinden
             name: Verbinden
             icon: mdi:wifi-plus
             color: green
@@ -113,7 +178,6 @@ views:
             entity: sensor.van_netzwerk_verbindungsstatus
             name: Status
             icon: mdi:progress-wrench
-            vertical: true
 
       # ------------------------------------------------ QR nur bei Bedarf
       - type: grid
@@ -151,18 +215,10 @@ views:
             heading_style: subtitle
             icon: mdi:signal-cellular-3
 
-          - type: gauge
+          - type: tile
             entity: sensor.mobilfunk_geschaetzter_durchsatz
             name: Geschaetzt
-            unit: Mbit/s
-            min: 0
-            max: 300
-            needle: true
-            severity:
-              red: 0
-              yellow: 20
-              green: 60
-
+            icon: mdi:signal-cellular-3
           - type: glance
             columns: 2
             entities:
@@ -197,22 +253,30 @@ views:
               - condition: or
                 conditions:
                   - condition: numeric_state
-                    entity: sensor.van_tablet_battery
+                    entity: sensor.fire_tablet_batterie
                     below: 25
                   - condition: numeric_state
-                    entity: sensor.van_tablet_battery
+                    entity: sensor.fire_tablet_batterie
                     above: 85
             card:
               type: tile
-              entity: sensor.van_tablet_battery
+              entity: sensor.fire_tablet_batterie
               name: Akku ausserhalb des Schonbereichs
               icon: mdi:battery-alert
               color: orange
 
+          # Fully Kiosk liefert den Bildschirm als Schalter, nicht als Licht --
+          # die Helligkeit sitzt deshalb in einer eigenen Kachel daneben.
           - type: tile
-            entity: light.van_tablet_screen
+            entity: switch.fire_tablet_bildschirm
             name: Bildschirm
             icon: mdi:monitor
+
+          - type: tile
+            entity: number.fire_tablet_bildschirmhelligkeit
+            name: Helligkeit
+            icon: mdi:brightness-6
             features_position: bottom
             features:
-              - type: light-brightness
+              - type: numeric-input
+                style: slider
